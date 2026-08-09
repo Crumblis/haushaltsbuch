@@ -75,7 +75,7 @@ const berechneHochrechnung = (data, jahr, typ) => {
       const monatStr = `${jahr}-${m}`;
       if (m <= istGrenzeMonat) ist += istWertKonto(data, k.id, monatStr);
       else {
-        const e = data.budgets.find((b) => b.kontoId === k.id && b.monat === monatStr);
+        const e = data.budgets.find((b) => b.zielTyp === "konto" && b.zielId === k.id && b.monat === monatStr);
         plan += e ? Number(e.betrag) : 0;
       }
     }
@@ -193,7 +193,15 @@ async function loadData() {
         bankkontoId: r.bankkonto_id, vonBankkontoId: r.von_bankkonto_id, nachBankkontoId: r.nach_bankkonto_id, vermoegenswertId: r.vermoegenswert_id,
         beschreibung: r.beschreibung, buchungsnummer: r.buchungsnummer, splits: splitsProBuchung[r.id] || [],
       })),
-      budgets: (budgets.data || []).map((r) => ({ id: r.id, kontoId: r.konto_id, monat: r.monat, betrag: r.betrag })),
+      budgets: (budgets.data || []).map((r) => ({
+        id: r.id,
+        zielTyp: r.ziel_typ || "konto",
+        zielId: r.konto_id || r.bilanzposition_id || null,
+        vonBankkontoId: r.von_bankkonto_id,
+        nachBankkontoId: r.nach_bankkonto_id,
+        monat: r.monat,
+        betrag: r.betrag,
+      })),
     };
   } catch (e) {
     console.error("Laden fehlgeschlagen", e);
@@ -215,7 +223,16 @@ const mapDarlehen = (l) => ({ id: l.id, name: l.name, glaeubiger: l.glaeubiger |
 const mapSondertilgung = (s) => ({ id: s.id, darlehen_id: s.darlehenId, datum: s.datum, betrag: Number(s.betrag) || 0 });
 const mapBuchung = (b) => ({ id: b.id, datum: b.datum, betrag: Number(b.betrag) || 0, art: b.art, konto_id: b.kontoId || null, adresse_id: b.adresseId || null, klasse_id: b.klasseId || null, bankkonto_id: b.bankkontoId || null, von_bankkonto_id: b.vonBankkontoId || null, nach_bankkonto_id: b.nachBankkontoId || null, vermoegenswert_id: b.vermoegenswertId || null, beschreibung: b.beschreibung || null, buchungsnummer: b.buchungsnummer || null });
 const mapSplit = (s, buchungId) => ({ id: s.id || uid(), buchung_id: buchungId, konto_id: s.kontoId || null, betrag: Number(s.betrag) || 0, klasse_id: s.klasseId || null });
-const mapBudget = (b) => ({ id: b.id, konto_id: b.kontoId || null, monat: b.monat, betrag: Number(b.betrag) || 0 });
+const mapBudget = (b) => ({
+  id: b.id,
+  ziel_typ: b.zielTyp || "konto",
+  konto_id: b.zielTyp === "konto" ? (b.zielId || null) : null,
+  bilanzposition_id: b.zielTyp === "bilanzposition" ? (b.zielId || null) : null,
+  von_bankkonto_id: b.zielTyp === "umbuchung" ? (b.vonBankkontoId || null) : null,
+  nach_bankkonto_id: b.zielTyp === "umbuchung" ? (b.nachBankkontoId || null) : null,
+  monat: b.monat,
+  betrag: Number(b.betrag) || 0,
+});
 
 // ---------- Generische Einzelzeilen-Operationen ----------
 async function dbInsert(table, row) {
@@ -489,6 +506,7 @@ const NAV = [
   { id: "darlehen", label: "Darlehen" },
   { id: "stamm", label: "Konten & Klassen" },
   { id: "guv", label: "GuV" },
+  { id: "hochrechnung", label: "Hochrechnung" },
   { id: "budget", label: "Budgetplaner" },
   { id: "bilanz", label: "Bilanz" },
   { id: "cashflow", label: "Cashflow" },
@@ -643,6 +661,7 @@ export default function App() {
           {tab === "darlehen" && <Darlehen data={data} update={update} db={db} loanSchedule={loanSchedule} />}
           {tab === "stamm" && <Stammdaten data={data} update={update} db={db} />}
           {tab === "guv" && <GuV data={data} kontoById={kontoById} klassen={data.klassen} />}
+          {tab === "hochrechnung" && <Hochrechnung data={data} kontoById={kontoById} />}
           {tab === "budget" && <Budgetplaner data={data} update={update} db={db} kontoById={kontoById} />}
           {tab === "bilanz" && <Bilanz data={data} bankSaldo={bankSaldo} assetValue={assetValue} loanRestschuld={loanRestschuld} nettovermoegenAt={nettovermoegenAt} />}
           {tab === "cashflow" && <Cashflow data={data} bankById={bankById} bankSaldo={bankSaldo} />}
@@ -1575,38 +1594,64 @@ function Budgetplaner({ data, update, db, kontoById }) {
   const heute = todayISO();
   const aktuellesJahr = heute.slice(0, 4);
   const [jahr, setJahr] = useState(aktuellesJahr);
-  const [entwurf, setEntwurf] = useState({}); // Schlüssel "kontoId|monat" -> String-Wert
+  const [entwurf, setEntwurf] = useState({}); // Schlüssel "zielTyp|zielId|monat" -> String-Wert
   const [gespeichertHinweis, setGespeichertHinweis] = useState(false);
+  const [neueUmbuchungsPaare, setNeueUmbuchungsPaare] = useState([]);
+  const [neuVon, setNeuVon] = useState(data.bankkonten[0]?.id || "");
+  const [neuNach, setNeuNach] = useState(data.bankkonten[1]?.id || data.bankkonten[0]?.id || "");
 
   const blattkonten = data.konten
     .filter((k) => istBlattkonto(k, data.konten))
     .sort((a, b) => a.typ.localeCompare(b.typ) || (Number(a.sortIndex) || 0) - (Number(b.sortIndex) || 0) || a.name.localeCompare(b.name));
 
+  const gespeichertePaare = Array.from(new Set(data.budgets.filter((b) => b.zielTyp === "umbuchung").map((b) => `${b.vonBankkontoId}>${b.nachBankkontoId}`)));
+  const allePaare = Array.from(new Set([...gespeichertePaare, ...neueUmbuchungsPaare.map((p) => `${p.von}>${p.nach}`)]));
+  const umbuchungsZeilen = allePaare.filter(Boolean).map((p) => { const [von, nach] = p.split(">"); return { von, nach }; });
+
+  const entwurfKey = (zielTyp, zielId, monat) => `${zielTyp}|${zielId}|${monat}`;
+
   // Entwurf neu aus den gespeicherten Planwerten aufbauen, sobald die Planungsperiode (Jahr) wechselt
   useEffect(() => {
     const neu = {};
-    data.budgets
-      .filter((b) => b.monat.startsWith(`${jahr}-`))
-      .forEach((b) => { neu[`${b.kontoId}|${b.monat.slice(5, 7)}`] = String(b.betrag); });
+    data.budgets.filter((b) => b.monat.startsWith(`${jahr}-`)).forEach((b) => {
+      const zielId = b.zielTyp === "umbuchung" ? `${b.vonBankkontoId}>${b.nachBankkontoId}` : b.zielId;
+      neu[entwurfKey(b.zielTyp, zielId, b.monat.slice(5, 7))] = String(b.betrag);
+    });
     setEntwurf(neu);
     setGespeichertHinweis(false);
     // eslint-disable-next-line
   }, [jahr, data.budgets.length]);
 
-  const zelle = (kontoId, monat) => entwurf[`${kontoId}|${monat}`] ?? "";
-  const setZelle = (kontoId, monat, wert) => {
-    setEntwurf((e) => ({ ...e, [`${kontoId}|${monat}`]: wert }));
+  const zelle = (zielTyp, zielId, monat) => entwurf[entwurfKey(zielTyp, zielId, monat)] ?? "";
+  const setZelle = (zielTyp, zielId, monat, wert) => {
+    setEntwurf((e) => ({ ...e, [entwurfKey(zielTyp, zielId, monat)]: wert }));
     setGespeichertHinweis(false);
+  };
+
+  const addUmbuchungsZeile = () => {
+    if (!neuVon || !neuNach || neuVon === neuNach) return;
+    if (allePaare.includes(`${neuVon}>${neuNach}`)) return;
+    setNeueUmbuchungsPaare([...neueUmbuchungsPaare, { von: neuVon, nach: neuNach }]);
   };
 
   const speichern = () => {
     const vorhandene = data.budgets.filter((b) => b.monat.startsWith(`${jahr}-`));
     const neueListe = [...data.budgets];
-    for (const k of blattkonten) {
+    const alleZeilen = [
+      ...blattkonten.map((k) => ({ zielTyp: "konto", zielId: k.id })),
+      ...data.bilanzpositionen.map((p) => ({ zielTyp: "bilanzposition", zielId: p.id })),
+      ...umbuchungsZeilen.map((u) => ({ zielTyp: "umbuchung", zielId: `${u.von}>${u.nach}`, von: u.von, nach: u.nach })),
+    ];
+
+    for (const zeile of alleZeilen) {
       for (const m of MONATE) {
         const monatStr = `${jahr}-${m}`;
-        const wertStr = entwurf[`${k.id}|${m}`];
-        const bestehend = vorhandene.find((b) => b.kontoId === k.id && b.monat === monatStr);
+        const wertStr = entwurf[entwurfKey(zeile.zielTyp, zeile.zielId, m)];
+        const bestehend = vorhandene.find((b) => {
+          if (b.zielTyp !== zeile.zielTyp || b.monat !== monatStr) return false;
+          if (zeile.zielTyp === "umbuchung") return b.vonBankkontoId === zeile.von && b.nachBankkontoId === zeile.nach;
+          return b.zielId === zeile.zielId;
+        });
         const istLeer = wertStr === undefined || wertStr === "";
 
         if (istLeer) {
@@ -1626,7 +1671,9 @@ function Budgetplaner({ data, update, db, kontoById }) {
             if (idx >= 0) neueListe[idx] = rec;
           }
         } else {
-          const rec = { id: uid(), kontoId: k.id, monat: monatStr, betrag: wert };
+          const rec = zeile.zielTyp === "umbuchung"
+            ? { id: uid(), zielTyp: "umbuchung", zielId: null, vonBankkontoId: zeile.von, nachBankkontoId: zeile.nach, monat: monatStr, betrag: wert }
+            : { id: uid(), zielTyp: zeile.zielTyp, zielId: zeile.zielId, monat: monatStr, betrag: wert };
           db.budgets.add(rec);
           neueListe.push(rec);
         }
@@ -1636,12 +1683,15 @@ function Budgetplaner({ data, update, db, kontoById }) {
     setGespeichertHinweis(true);
   };
 
-  const istGrenzeMonat = jahr === aktuellesJahr ? heute.slice(5, 7) : jahr < aktuellesJahr ? "12" : "00";
   const vorjahr = String(Number(jahr) - 1);
-
-  const hochErtrag = berechneHochrechnung({ ...data, budgets: [...data.budgets.filter((b) => !b.monat.startsWith(`${jahr}-`)), ...Object.entries(entwurf).filter(([, v]) => v !== "").map(([key, v]) => { const [kontoId, m] = key.split("|"); return { kontoId, monat: `${jahr}-${m}`, betrag: Number(v) }; })] }, jahr, "Ertrag");
-  const hochAufwand = berechneHochrechnung({ ...data, budgets: [...data.budgets.filter((b) => !b.monat.startsWith(`${jahr}-`)), ...Object.entries(entwurf).filter(([, v]) => v !== "").map(([key, v]) => { const [kontoId, m] = key.split("|"); return { kontoId, monat: `${jahr}-${m}`, betrag: Number(v) }; })] }, jahr, "Aufwand");
-  const hochErgebnis = hochErtrag.summe - hochAufwand.summe;
+  const istUmbuchungVorjahr = (von, nach, monatStr) => {
+    let summe = 0;
+    for (const b of data.buchungen) {
+      if (b.art !== "Umbuchung" || !b.datum || monthKey(b.datum) !== monatStr) continue;
+      if (b.vonBankkontoId === von && b.nachBankkontoId === nach) summe += Number(b.betrag);
+    }
+    return summe;
+  };
 
   const jahre = Array.from(new Set([
     aktuellesJahr,
@@ -1650,10 +1700,21 @@ function Budgetplaner({ data, update, db, kontoById }) {
     ...data.budgets.map((b) => b.monat.slice(0, 4)),
   ])).sort();
 
+  const zellenInput = (zielTyp, zielId, monat) => (
+    <input
+      type="number"
+      step="0.01"
+      value={zelle(zielTyp, zielId, monat)}
+      onChange={(e) => setZelle(zielTyp, zielId, monat, e.target.value)}
+      placeholder="–"
+      style={{ width: 62, textAlign: "right", border: `1px solid ${C.lineStrong}`, borderRadius: 3, padding: "3px 4px", fontFamily: FONT_MONO, fontSize: 12 }}
+    />
+  );
+
   return (
     <div>
       <h2 style={{ fontFamily: FONT_SERIF, fontWeight: 500, marginTop: 0 }}>Budgetplaner</h2>
-      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 14, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 18, flexWrap: "wrap" }}>
         <div>
           <Label>Planungsperiode (Jahr)</Label>
           <Select value={jahr} onChange={(e) => setJahr(e.target.value)} style={{ width: 120 }}>
@@ -1664,39 +1725,9 @@ function Budgetplaner({ data, update, db, kontoById }) {
         {gespeichertHinweis && <span style={{ fontSize: 12, color: C.gain }}>Gespeichert ✓</span>}
       </div>
 
-      <Card style={{ marginBottom: 16, background: C.gainSoft, borderColor: C.gain }}>
-        <Label>Jahres-Hochrechnung {jahr}</Label>
-        <div style={{ fontSize: 12, color: C.inkSoft, margin: "6px 0 12px" }}>
-          {jahr === aktuellesJahr
-            ? `Ist-Werte bis einschließlich ${MONATSNAME[istGrenzeMonat]}, für die restlichen Monate zählen deine (noch ungespeicherten) Planwerte unten live mit.`
-            : jahr < aktuellesJahr
-            ? "Abgeschlossenes Jahr – zeigt ausschließlich Ist-Werte aus deinen Buchungen."
-            : "Zukünftiges Jahr – zeigt ausschließlich deine Planwerte."}
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
-          <div>
-            <Label>Erträge (Hochrechnung)</Label>
-            <div style={{ fontSize: 19, fontFamily: FONT_MONO, color: C.gain }}>{fmtEUR(hochErtrag.summe)}</div>
-            <div style={{ fontSize: 11, color: C.inkSoft }}>Ist {fmtEUR(hochErtrag.ist)} · Plan {fmtEUR(hochErtrag.plan)}</div>
-          </div>
-          <div>
-            <Label>Aufwendungen (Hochrechnung)</Label>
-            <div style={{ fontSize: 19, fontFamily: FONT_MONO, color: C.loss }}>{fmtEUR(hochAufwand.summe)}</div>
-            <div style={{ fontSize: 11, color: C.inkSoft }}>Ist {fmtEUR(hochAufwand.ist)} · Plan {fmtEUR(hochAufwand.plan)}</div>
-          </div>
-          <div>
-            <Label>Ergebnis (Hochrechnung)</Label>
-            <div style={{ fontSize: 19, fontFamily: FONT_MONO }}><Money value={hochErgebnis} /></div>
-          </div>
-        </div>
-      </Card>
-
-      <Card style={{ overflowX: "auto" }}>
-        <Label>Planwerte je Konto und Monat (€) – Referenzjahr {vorjahr}</Label>
-        <div style={{ fontSize: 12, color: C.inkSoft, margin: "4px 0 10px" }}>
-          Jede Zelle zeigt klein den Ist-Wert aus {vorjahr} als Orientierung. Bereits vergangene Monate von {jahr} zeigen zusätzlich den eigenen Ist-Wert. Änderungen werden erst mit "Planwerte speichern" oben übernommen.
-        </div>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+      <Card style={{ overflowX: "auto", marginBottom: 16 }}>
+        <Label>Konten – Referenzjahr {vorjahr}</Label>
+        <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8 }}>
           <thead>
             <tr>
               <Th>Konto</Th>
@@ -1709,31 +1740,186 @@ function Budgetplaner({ data, update, db, kontoById }) {
               <React.Fragment key={typ}>
                 <tr><Td style={{ fontWeight: 700, background: C.paper }} colSpan={14}>{typ === "Ertrag" ? "Erträge" : "Aufwendungen"}</Td></tr>
                 {blattkonten.filter((k) => k.typ === typ).map((k) => {
-                  const summeJahr = MONATE.reduce((s, m) => s + (Number(zelle(k.id, m)) || 0), 0);
+                  const summeJahr = MONATE.reduce((s, m) => s + (Number(zelle("konto", k.id, m)) || 0), 0);
                   return (
                     <tr key={k.id}>
                       <Td>{kontoPfadName(k, kontoById)}</Td>
-                      {MONATE.map((m) => {
-                        const vergangen = m <= istGrenzeMonat;
-                        const vorjahrIst = istWertKonto(data, k.id, `${vorjahr}-${m}`);
-                        return (
-                          <Td key={m} align="right">
-                            <input
-                              type="number"
-                              step="0.01"
-                              value={zelle(k.id, m)}
-                              onChange={(e) => setZelle(k.id, m, e.target.value)}
-                              placeholder="–"
-                              style={{ width: 62, textAlign: "right", border: `1px solid ${C.lineStrong}`, borderRadius: 3, padding: "3px 4px", fontFamily: FONT_MONO, fontSize: 12 }}
-                            />
-                            <div style={{ fontSize: 10, color: C.inkSoft, marginTop: 2 }}>
-                              {vergangen && <div>Ist {fmtEUR(istWertKonto(data, k.id, `${jahr}-${m}`))}</div>}
-                              <div>{vorjahr}: {fmtEUR(vorjahrIst)}</div>
-                            </div>
-                          </Td>
-                        );
-                      })}
+                      {MONATE.map((m) => (
+                        <Td key={m} align="right">
+                          {zellenInput("konto", k.id, m)}
+                          <div style={{ fontSize: 10, color: C.inkSoft, marginTop: 2 }}>{vorjahr}: {fmtEUR(istWertKonto(data, k.id, `${vorjahr}-${m}`))}</div>
+                        </Td>
+                      ))}
                       <Td align="right" mono>{fmtEUR(summeJahr)}</Td>
+                    </tr>
+                  );
+                })}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <Card style={{ overflowX: "auto", marginBottom: 16 }}>
+        <Label>Umbuchungen / Sparpläne (zwischen eigenen Bankkonten) – Referenzjahr {vorjahr}</Label>
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-end", margin: "8px 0 12px", flexWrap: "wrap" }}>
+          <div>
+            <Label>Von</Label>
+            <Select value={neuVon} onChange={(e) => setNeuVon(e.target.value)} style={{ width: 160 }}>
+              {data.bankkonten.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </Select>
+          </div>
+          <div>
+            <Label>Nach</Label>
+            <Select value={neuNach} onChange={(e) => setNeuNach(e.target.value)} style={{ width: 160 }}>
+              {data.bankkonten.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </Select>
+          </div>
+          <Btn onClick={addUmbuchungsZeile}>+ Sparplan hinzufügen</Btn>
+        </div>
+        {umbuchungsZeilen.length === 0 ? (
+          <i style={{ fontSize: 13, color: C.inkSoft }}>Noch keine geplanten Umbuchungen angelegt.</i>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <Th>Von → Nach</Th>
+                {MONATE.map((m) => <Th key={m} align="right">{MONATSNAME[m]}</Th>)}
+                <Th align="right">Summe</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {umbuchungsZeilen.map((u) => {
+                const zielId = `${u.von}>${u.nach}`;
+                const summeJahr = MONATE.reduce((s, m) => s + (Number(zelle("umbuchung", zielId, m)) || 0), 0);
+                return (
+                  <tr key={zielId}>
+                    <Td>{data.bankkonten.find((b) => b.id === u.von)?.name || "?"} → {data.bankkonten.find((b) => b.id === u.nach)?.name || "?"}</Td>
+                    {MONATE.map((m) => (
+                      <Td key={m} align="right">
+                        {zellenInput("umbuchung", zielId, m)}
+                        <div style={{ fontSize: 10, color: C.inkSoft, marginTop: 2 }}>{vorjahr}: {fmtEUR(istUmbuchungVorjahr(u.von, u.nach, `${vorjahr}-${m}`))}</div>
+                      </Td>
+                    ))}
+                    <Td align="right" mono>{fmtEUR(summeJahr)}</Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </Card>
+
+      <Card style={{ overflowX: "auto" }}>
+        <Label>Bilanzpositionen (geplanter Zielwert je Monat)</Label>
+        {data.bilanzpositionen.length === 0 ? (
+          <i style={{ fontSize: 13, color: C.inkSoft }}>Keine Bilanzpositionen angelegt (siehe Konten & Klassen).</i>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8 }}>
+            <thead>
+              <tr>
+                <Th>Position</Th>
+                {MONATE.map((m) => <Th key={m} align="right">{MONATSNAME[m]}</Th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {data.bilanzpositionen.map((p) => (
+                <tr key={p.id}>
+                  <Td>{p.name} ({p.typ})</Td>
+                  {MONATE.map((m) => <Td key={m} align="right">{zellenInput("bilanzposition", p.id, m)}</Td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ---------- Hochrechnung (eigener Report: Ist bis heute + Plan für Restjahr) ----------
+function Hochrechnung({ data, kontoById }) {
+  const [jahr, setJahr] = useState(todayISO().slice(0, 4));
+  const aktuellesJahr = todayISO().slice(0, 4);
+  const istGrenzeMonat = jahr === aktuellesJahr ? todayISO().slice(5, 7) : jahr < aktuellesJahr ? "12" : "00";
+
+  const hjErtrag = berechneHochrechnung(data, jahr, "Ertrag");
+  const hjAufwand = berechneHochrechnung(data, jahr, "Aufwand");
+  const hjErgebnis = hjErtrag.summe - hjAufwand.summe;
+
+  const jahre = Array.from(new Set([
+    aktuellesJahr,
+    String(Number(aktuellesJahr) + 1),
+    ...data.buchungen.map((b) => b.datum && b.datum.slice(0, 4)).filter(Boolean),
+    ...data.budgets.map((b) => b.monat.slice(0, 4)),
+  ])).sort();
+
+  const blattkonten = data.konten
+    .filter((k) => istBlattkonto(k, data.konten))
+    .sort((a, b) => a.typ.localeCompare(b.typ) || (Number(a.sortIndex) || 0) - (Number(b.sortIndex) || 0) || a.name.localeCompare(b.name));
+
+  const zeileFuerKonto = (k) => {
+    let ist = 0, plan = 0;
+    for (const m of MONATE) {
+      const monatStr = `${jahr}-${m}`;
+      if (m <= istGrenzeMonat) ist += istWertKonto(data, k.id, monatStr);
+      else { const e = data.budgets.find((b) => b.zielTyp === "konto" && b.zielId === k.id && b.monat === monatStr); plan += e ? Number(e.betrag) : 0; }
+    }
+    return { ist, plan, summe: ist + plan };
+  };
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: FONT_SERIF, fontWeight: 500, marginTop: 0 }}>Hochrechnung</h2>
+      <div style={{ marginBottom: 14 }}>
+        <Label>Jahr</Label>
+        <Select value={jahr} onChange={(e) => setJahr(e.target.value)} style={{ width: 120 }}>
+          {jahre.map((j) => <option key={j} value={j}>{j}</option>)}
+        </Select>
+      </div>
+
+      <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 14 }}>
+        {jahr === aktuellesJahr
+          ? `Ist-Werte für abgeschlossene Monate bis einschließlich ${MONATSNAME[istGrenzeMonat]}, für die restlichen Monate deine Planwerte aus dem Budgetplaner (fehlende Planwerte zählen als 0).`
+          : jahr < aktuellesJahr
+          ? "Abgeschlossenes Jahr – zeigt ausschließlich Ist-Werte aus deinen Buchungen."
+          : "Zukünftiges Jahr – zeigt ausschließlich deine Planwerte aus dem Budgetplaner."}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 20 }}>
+        <Card>
+          <Label>Erträge (Hochrechnung)</Label>
+          <div style={{ fontSize: 21, fontFamily: FONT_MONO, color: C.gain }}>{fmtEUR(hjErtrag.summe)}</div>
+          <div style={{ fontSize: 11, color: C.inkSoft }}>Ist {fmtEUR(hjErtrag.ist)} · Plan {fmtEUR(hjErtrag.plan)}</div>
+        </Card>
+        <Card>
+          <Label>Aufwendungen (Hochrechnung)</Label>
+          <div style={{ fontSize: 21, fontFamily: FONT_MONO, color: C.loss }}>{fmtEUR(hjAufwand.summe)}</div>
+          <div style={{ fontSize: 11, color: C.inkSoft }}>Ist {fmtEUR(hjAufwand.ist)} · Plan {fmtEUR(hjAufwand.plan)}</div>
+        </Card>
+        <Card>
+          <Label>Ergebnis (Hochrechnung)</Label>
+          <div style={{ fontSize: 21, fontFamily: FONT_MONO }}><Money value={hjErgebnis} /></div>
+        </Card>
+      </div>
+
+      <Card>
+        <Label>Je Konto</Label>
+        <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8 }}>
+          <thead><tr><Th>Konto</Th><Th align="right">Ist (bisher)</Th><Th align="right">Plan (Rest)</Th><Th align="right">Hochrechnung</Th></tr></thead>
+          <tbody>
+            {["Ertrag", "Aufwand"].map((typ) => (
+              <React.Fragment key={typ}>
+                <tr><Td style={{ fontWeight: 700, background: C.paper }} colSpan={4}>{typ === "Ertrag" ? "Erträge" : "Aufwendungen"}</Td></tr>
+                {blattkonten.filter((k) => k.typ === typ).map((k) => {
+                  const z = zeileFuerKonto(k);
+                  if (z.ist === 0 && z.plan === 0) return null;
+                  return (
+                    <tr key={k.id}>
+                      <Td>{kontoPfadName(k, kontoById)}</Td>
+                      <Td align="right" mono>{fmtEUR(z.ist)}</Td>
+                      <Td align="right" mono style={{ color: C.inkSoft }}>{fmtEUR(z.plan)}</Td>
+                      <Td align="right" mono style={{ fontWeight: 600 }}>{fmtEUR(z.summe)}</Td>
                     </tr>
                   );
                 })}
@@ -1750,7 +1936,6 @@ function GuV({ data, kontoById, klassen }) {
   const [von, setVon] = useState(todayISO().slice(0, 4) + "-01-01");
   const [bis, setBis] = useState(todayISO());
   const [klasseFilter, setKlasseFilter] = useState("");
-  const [hochrechnungsJahr, setHochrechnungsJahr] = useState(todayISO().slice(0, 4));
 
   const relevante = data.buchungen.filter((b) => b.datum >= von && b.datum <= bis);
 
@@ -1840,16 +2025,6 @@ function GuV({ data, kontoById, klassen }) {
   })();
   const linienFarben = [C.green, C.amber, C.loss, "#4A6FA5", "#8B6EA0"];
 
-  const hjErtrag = berechneHochrechnung(data, hochrechnungsJahr, "Ertrag");
-  const hjAufwand = berechneHochrechnung(data, hochrechnungsJahr, "Aufwand");
-  const hjErgebnis = hjErtrag.summe - hjAufwand.summe;
-  const hjJahre = Array.from(new Set([
-    todayISO().slice(0, 4),
-    String(Number(todayISO().slice(0, 4)) + 1),
-    ...data.buchungen.map((b) => b.datum && b.datum.slice(0, 4)).filter(Boolean),
-    ...data.budgets.map((b) => b.monat.slice(0, 4)),
-  ])).sort();
-
   const renderGruppe = (gruppenObj, vorGruppenObj, farbe) =>
     sortiereGruppen(gruppenObj).map(([gruppe, konten]) => (
       <React.Fragment key={gruppe}>
@@ -1912,34 +2087,6 @@ function GuV({ data, kontoById, klassen }) {
           <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 2 }}>Vorperiode: {fmtEUR(vorSumAufwendungen)}</div>
         </Card>
       </div>
-
-      <Card style={{ marginBottom: 16, background: C.gainSoft, borderColor: C.gain }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 8 }}>
-          <Label>Jahres-Hochrechnung</Label>
-          <Select value={hochrechnungsJahr} onChange={(e) => setHochrechnungsJahr(e.target.value)} style={{ width: 110 }}>
-            {hjJahre.map((j) => <option key={j} value={j}>{j}</option>)}
-          </Select>
-        </div>
-        <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 10 }}>
-          Ist-Werte für abgeschlossene Monate von {hochrechnungsJahr}, für die restlichen Monate deine Planwerte aus dem Budgetplaner.
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
-          <div>
-            <Label>Erträge (Hochrechnung)</Label>
-            <div style={{ fontSize: 19, fontFamily: FONT_MONO, color: C.gain }}>{fmtEUR(hjErtrag.summe)}</div>
-            <div style={{ fontSize: 11, color: C.inkSoft }}>Ist {fmtEUR(hjErtrag.ist)} · Plan {fmtEUR(hjErtrag.plan)}</div>
-          </div>
-          <div>
-            <Label>Aufwendungen (Hochrechnung)</Label>
-            <div style={{ fontSize: 19, fontFamily: FONT_MONO, color: C.loss }}>{fmtEUR(hjAufwand.summe)}</div>
-            <div style={{ fontSize: 11, color: C.inkSoft }}>Ist {fmtEUR(hjAufwand.ist)} · Plan {fmtEUR(hjAufwand.plan)}</div>
-          </div>
-          <div>
-            <Label>Ergebnis (Hochrechnung)</Label>
-            <div style={{ fontSize: 19, fontFamily: FONT_MONO }}><Money value={hjErgebnis} /></div>
-          </div>
-        </div>
-      </Card>
 
       <Card style={{ marginBottom: 16 }}>
         <Label>Kostenstruktur je Monat (Fix / Variabel)</Label>
