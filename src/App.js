@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Papa from "papaparse";
+import { createClient } from "@supabase/supabase-js";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Cell
 } from "recharts";
@@ -59,21 +60,66 @@ const seed = {
 
 const STORAGE_KEY = "haushaltsbuch-v1";
 
+const supabase = createClient(
+  "https://qatpgbwzjegzwnixfsai.supabase.co",   // z. B. https://abcdefgh.supabase.co
+  "sb_publishable_vRzu_oYDFZtp54g7NBLBTQ_GrC8_p0r"
+);
+
 async function loadData() {
   try {
-    const res = await window.storage.get(STORAGE_KEY);
-    if (res && res.value) return JSON.parse(res.value);
+    const { data, error } = await supabase
+      .from("haushaltsbuch")
+      .select("data")
+      .eq("id", "ragnar")
+      .single();
+    if (error) throw error;
+    if (data && data.data && Object.keys(data.data).length > 0) return data.data;
   } catch (e) {
-    /* Schlüssel existiert noch nicht */
+    console.error("Laden fehlgeschlagen", e);
   }
   return seed;
 }
+
 async function saveData(data) {
   try {
-    await window.storage.set(STORAGE_KEY, JSON.stringify(data));
+    await supabase
+      .from("haushaltsbuch")
+      .update({ data, updated_at: new Date().toISOString() })
+      .eq("id", "ragnar");
   } catch (e) {
     console.error("Speichern fehlgeschlagen", e);
   }
+}
+
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) setError("Anmeldung fehlgeschlagen: " + error.message);
+  };
+
+  return (
+    <div style={{ maxWidth: 320, margin: "80px auto", fontFamily: FONT_SANS }}>
+      <h2 style={{ fontFamily: FONT_SERIF }}>Haushaltsbuch – Anmeldung</h2>
+      <form onSubmit={submit}>
+        <div style={{ marginBottom: 10 }}>
+          <Label>E-Mail</Label>
+          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <Label>Passwort</Label>
+          <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+        </div>
+        <Btn primary type="submit">Anmelden</Btn>
+        {error && <div style={{ color: C.loss, fontSize: 13, marginTop: 8 }}>{error}</div>}
+      </form>
+    </div>
+  );
 }
 
 // ---------- Kleine UI-Bausteine ----------
@@ -218,8 +264,15 @@ const NAV = [
 ];
 
 export default function App() {
+  const [session, setSession] = useState(undefined);
   const [data, setData] = useState(null);
   const [tab, setTab] = useState("dashboard");
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => listener.subscription.unsubscribe();
+  }, []);
 
   useEffect(() => {
     loadData().then(setData);
@@ -229,6 +282,9 @@ export default function App() {
   }, [data]);
 
   const update = useCallback((fn) => setData((d) => fn({ ...d })), []);
+
+  if (session === undefined) return <div style={{ padding: 40 }}>Lade…</div>;
+  if (!session) return <LoginScreen />;
 
   if (!data) {
     return <div style={{ padding: 40, fontFamily: FONT_SANS, color: C.inkSoft }}>Lade Haushaltsbuch…</div>;
@@ -341,6 +397,12 @@ export default function App() {
               {n.label}
             </div>
           ))}
+          <div
+            onClick={() => supabase.auth.signOut()}
+            style={{ padding: "9px 18px", cursor: "pointer", fontSize: 13.5, marginTop: 20, borderTop: "1px solid rgba(255,255,255,0.2)", opacity: 0.85 }}
+          >
+            Abmelden
+          </div>
         </div>
         <div style={{ flex: 1, padding: 22, overflowX: "auto" }}>
           {tab === "dashboard" && <Dashboard data={data} bankSaldo={bankSaldo} bankById={bankById} nettovermoegenAt={nettovermoegenAt} />}
