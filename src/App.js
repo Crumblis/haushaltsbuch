@@ -755,7 +755,6 @@ function Buchungen({ data, update, db, kontoById, assetValue, editBuchungId, onC
       if (b) startEdit(b);
       onConsumedEdit();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editBuchungId]);
 
   const submit = (e) => {
