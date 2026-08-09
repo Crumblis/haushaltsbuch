@@ -45,6 +45,12 @@ const kontoPfadName = (konto, byId) => {
 };
 
 // ---------- Seed-Daten ----------
+const LAENDER = [
+  "Deutschland", "Österreich", "Schweiz", "Niederlande", "Belgien", "Luxemburg", "Frankreich", "Italien", "Spanien",
+  "Portugal", "Dänemark", "Schweden", "Norwegen", "Finnland", "Polen", "Tschechien", "Slowakei", "Ungarn", "Slowenien",
+  "Kroatien", "Griechenland", "Irland", "Vereinigtes Königreich", "USA", "Kanada", "Sonstiges",
+];
+
 const seed = {
   konten: [
     { id: uid(), name: "Gehalt", typ: "Ertrag", gruppe: "Betriebliche Erträge" },
@@ -61,6 +67,11 @@ const seed = {
     { id: uid(), name: "Nebentätigkeit", typ: "Kostenträger" },
   ],
   adressen: [],
+  adresskategorien: [
+    { id: uid(), name: "Privatperson" },
+    { id: uid(), name: "Supermarkt" },
+    { id: uid(), name: "Einzelhandel" },
+  ],
   bankkonten: [{ id: uid(), name: "Girokonto", startsaldo: 0 }],
   bilanzpositionen: [],
   vermoegenswerte: [],
@@ -85,10 +96,11 @@ const INSERT_ORDER = [...DELETE_ORDER].reverse();
 
 async function loadData() {
   try {
-    const [konten, klassen, adressen, bankkonten, bilanzpositionen, vermoegenswerte, vermoegensbuchungen, darlehen, sondertilgungen, buchungen, buchungssplits] = await Promise.all([
+    const [konten, klassen, adressen, adresskategorien, bankkonten, bilanzpositionen, vermoegenswerte, vermoegensbuchungen, darlehen, sondertilgungen, buchungen, buchungssplits] = await Promise.all([
       supabase.from("konten").select("*"),
       supabase.from("klassen").select("*"),
       supabase.from("adressen").select("*"),
+      supabase.from("adresskategorien").select("*"),
       supabase.from("bankkonten").select("*"),
       supabase.from("bilanzpositionen").select("*"),
       supabase.from("vermoegenswerte").select("*"),
@@ -105,6 +117,7 @@ async function loadData() {
       seed.konten.forEach((k) => dbInsert("konten", mapKonto(k)));
       seed.klassen.forEach((k) => dbInsert("klassen", mapKlasse(k)));
       seed.bankkonten.forEach((b) => dbInsert("bankkonten", mapBankkonto(b)));
+      seed.adresskategorien.forEach((k) => dbInsert("adresskategorien", mapAdresskategorie(k)));
       return seed;
     }
 
@@ -116,7 +129,8 @@ async function loadData() {
     return {
       konten: (konten.data || []).map((r) => ({ id: r.id, name: r.name, typ: r.typ, gruppe: r.gruppe, kostenart: r.kostenart, parentId: r.parent_id })),
       klassen: klassen.data || [],
-      adressen: adressen.data || [],
+      adressen: (adressen.data || []).map((r) => ({ id: r.id, name: r.name, iban: r.iban, notiz: r.notiz, strasse: r.strasse, plz: r.plz, stadt: r.stadt, land: r.land, kategorieId: r.kategorie_id })),
+      adresskategorien: adresskategorien.data || [],
       bankkonten: bankkonten.data || [],
       bilanzpositionen: bilanzpositionen.data || [],
       vermoegenswerte: (vermoegenswerte.data || []).map((r) => ({ id: r.id, name: r.name, typ: r.typ, kaufwert: r.kaufwert, kaufdatum: r.kaufdatum, isin: r.isin, anzahl: r.anzahl, aktuellerKurs: r.aktueller_kurs, kursDatum: r.kurs_datum, notiz: r.notiz })),
@@ -138,7 +152,8 @@ async function loadData() {
 // ---------- Einzelzeilen-Mapper JS -> DB-Spaltennamen ----------
 const mapKonto = (k) => ({ id: k.id, name: k.name, typ: k.typ, gruppe: k.gruppe || null, kostenart: k.kostenart || null, parent_id: k.parentId || null });
 const mapKlasse = (k) => ({ id: k.id, name: k.name, typ: k.typ });
-const mapAdresse = (a) => ({ id: a.id, name: a.name, rolle: a.rolle || null, iban: a.iban || null, notiz: a.notiz || null });
+const mapAdresse = (a) => ({ id: a.id, name: a.name, iban: a.iban || null, notiz: a.notiz || null, strasse: a.strasse || null, plz: a.plz || null, stadt: a.stadt || null, land: a.land || null, kategorie_id: a.kategorieId || null });
+const mapAdresskategorie = (k) => ({ id: k.id, name: k.name });
 const mapBankkonto = (b) => ({ id: b.id, name: b.name, startsaldo: Number(b.startsaldo) || 0 });
 const mapBilanzposition = (p) => ({ id: p.id, name: p.name, typ: p.typ, wert: Number(p.wert) || 0 });
 const mapVermoegenswert = (a) => ({ id: a.id, name: a.name, typ: a.typ, kaufwert: numOrNull(a.kaufwert), kaufdatum: a.kaufdatum || null, isin: a.isin || null, anzahl: numOrNull(a.anzahl), aktueller_kurs: numOrNull(a.aktuellerKurs), kurs_datum: a.kursDatum || null, notiz: a.notiz || null });
@@ -176,6 +191,7 @@ const db = {
   konten: { add: (k) => dbInsert("konten", mapKonto(k)), update: (k) => dbUpdate("konten", mapKonto(k)), remove: (id) => dbDelete("konten", id) },
   klassen: { add: (k) => dbInsert("klassen", mapKlasse(k)), update: (k) => dbUpdate("klassen", mapKlasse(k)), remove: (id) => dbDelete("klassen", id) },
   adressen: { add: (a) => dbInsert("adressen", mapAdresse(a)), update: (a) => dbUpdate("adressen", mapAdresse(a)), remove: (id) => dbDelete("adressen", id) },
+  adresskategorien: { add: (k) => dbInsert("adresskategorien", mapAdresskategorie(k)), update: (k) => dbUpdate("adresskategorien", mapAdresskategorie(k)), remove: (id) => dbDelete("adresskategorien", id) },
   bankkonten: { add: (b) => dbInsert("bankkonten", mapBankkonto(b)), update: (b) => dbUpdate("bankkonten", mapBankkonto(b)), remove: (id) => dbDelete("bankkonten", id) },
   bilanzpositionen: { add: (p) => dbInsert("bilanzpositionen", mapBilanzposition(p)), update: (p) => dbUpdate("bilanzpositionen", mapBilanzposition(p)), remove: (id) => dbDelete("bilanzpositionen", id) },
   vermoegenswerte: { add: (a) => dbInsert("vermoegenswerte", mapVermoegenswert(a)), update: (a) => dbUpdate("vermoegenswerte", mapVermoegenswert(a)), remove: (id) => dbDelete("vermoegenswerte", id) },
@@ -1145,8 +1161,14 @@ function ImportCSV({ data, update }) {
 }
 
 // ---------- Adressbuch ----------
+function emptyAdresse() {
+  return { id: null, name: "", strasse: "", plz: "", stadt: "", land: "Deutschland", kategorieId: "", iban: "", notiz: "" };
+}
+
 function Adressen({ data, update, db }) {
-  const [form, setForm] = useState({ id: null, name: "", rolle: "Beide", iban: "", notiz: "" });
+  const [form, setForm] = useState(emptyAdresse());
+  const [neueKategorie, setNeueKategorie] = useState("");
+  const kategorieById = Object.fromEntries(data.adresskategorien.map((k) => [k.id, k]));
 
   const submit = (e) => {
     e.preventDefault();
@@ -1157,11 +1179,24 @@ function Adressen({ data, update, db }) {
       adressen: form.id ? d.adressen.map((a) => (a.id === form.id ? rec : a)) : [rec, ...d.adressen],
     }));
     if (form.id) db.adressen.update(rec); else db.adressen.add(rec);
-    setForm({ id: null, name: "", rolle: "Beide", iban: "", notiz: "" });
+    setForm(emptyAdresse());
   };
   const remove = (id) => {
     update((d) => ({ ...d, adressen: d.adressen.filter((a) => a.id !== id) }));
     db.adressen.remove(id);
+  };
+
+  const addKategorie = () => {
+    if (!neueKategorie.trim()) return;
+    const rec = { id: uid(), name: neueKategorie.trim() };
+    update((d) => ({ ...d, adresskategorien: [...d.adresskategorien, rec] }));
+    db.adresskategorien.add(rec);
+    setForm({ ...form, kategorieId: rec.id });
+    setNeueKategorie("");
+  };
+  const removeKategorie = (id) => {
+    update((d) => ({ ...d, adresskategorien: d.adresskategorien.filter((k) => k.id !== id) }));
+    db.adresskategorien.remove(id);
   };
 
   return (
@@ -1172,27 +1207,64 @@ function Adressen({ data, update, db }) {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 10 }}>
             <div><Label>Name</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>
             <div>
-              <Label>Rolle</Label>
-              <Select value={form.rolle} onChange={(e) => setForm({ ...form, rolle: e.target.value })}>
-                <option>Empfänger</option><option>Sender</option><option>Beide</option>
+              <Label>Kategorie</Label>
+              <Select value={form.kategorieId} onChange={(e) => setForm({ ...form, kategorieId: e.target.value })}>
+                <option value="">– keine –</option>
+                {data.adresskategorien.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
               </Select>
             </div>
             <div><Label>IBAN (optional)</Label><Input value={form.iban} onChange={(e) => setForm({ ...form, iban: e.target.value })} /></div>
-            <div><Label>Notiz</Label><Input value={form.notiz} onChange={(e) => setForm({ ...form, notiz: e.target.value })} /></div>
           </div>
-          <Btn primary type="submit">{form.id ? "Speichern" : "Adresse anlegen"}</Btn>
-          {form.id && <Btn onClick={() => setForm({ id: null, name: "", rolle: "Beide", iban: "", notiz: "" })} style={{ marginLeft: 8 }}>Abbrechen</Btn>}
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1.5fr 1.5fr", gap: 10, marginBottom: 10 }}>
+            <div><Label>Straße + Hausnr.</Label><Input value={form.strasse} onChange={(e) => setForm({ ...form, strasse: e.target.value })} /></div>
+            <div><Label>PLZ</Label><Input value={form.plz} onChange={(e) => setForm({ ...form, plz: e.target.value })} /></div>
+            <div><Label>Stadt</Label><Input value={form.stadt} onChange={(e) => setForm({ ...form, stadt: e.target.value })} /></div>
+            <div>
+              <Label>Land</Label>
+              <Select value={form.land} onChange={(e) => setForm({ ...form, land: e.target.value })}>
+                {LAENDER.map((l) => <option key={l} value={l}>{l}</option>)}
+              </Select>
+            </div>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <Label>Notiz</Label>
+            <Input value={form.notiz} onChange={(e) => setForm({ ...form, notiz: e.target.value })} />
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn primary type="submit">{form.id ? "Speichern" : "Adresse anlegen"}</Btn>
+            {form.id && <Btn onClick={() => setForm(emptyAdresse())}>Abbrechen</Btn>}
+          </div>
         </form>
       </Card>
+
+      <Card style={{ marginBottom: 16 }}>
+        <Label>Kategorien verwalten</Label>
+        <div style={{ display: "flex", gap: 8, margin: "8px 0", flexWrap: "wrap" }}>
+          {data.adresskategorien.map((k) => (
+            <span key={k.id} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: C.paper, border: `1px solid ${C.line}`, borderRadius: 20, padding: "4px 10px", fontSize: 12.5 }}>
+              {k.name}
+              <span onClick={() => removeKategorie(k.id)} style={{ cursor: "pointer", color: C.loss }}>✕</span>
+            </span>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Input value={neueKategorie} onChange={(e) => setNeueKategorie(e.target.value)} placeholder="Neue Kategorie, z. B. Supermarkt" style={{ maxWidth: 240 }} />
+          <Btn onClick={addKategorie}>+ Hinzufügen</Btn>
+        </div>
+      </Card>
+
       <Card>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><Th>Name</Th><Th>Rolle</Th><Th>IBAN</Th><Th>Notiz</Th><Th></Th></tr></thead>
+          <thead><tr><Th>Name</Th><Th>Kategorie</Th><Th>Adresse</Th><Th>IBAN</Th><Th></Th></tr></thead>
           <tbody>
             {data.adressen.map((a) => (
               <tr key={a.id}>
-                <Td>{a.name}</Td><Td>{a.rolle}</Td><Td mono>{a.iban}</Td><Td>{a.notiz}</Td>
+                <Td>{a.name}</Td>
+                <Td>{kategorieById[a.kategorieId]?.name || "–"}</Td>
+                <Td>{[a.strasse, [a.plz, a.stadt].filter(Boolean).join(" "), a.land].filter(Boolean).join(", ") || "–"}</Td>
+                <Td mono>{a.iban}</Td>
                 <Td align="right">
-                  <span onClick={() => setForm(a)} style={{ cursor: "pointer", fontSize: 12, color: C.amber, marginRight: 10 }}>bearbeiten</span>
+                  <span onClick={() => setForm({ ...emptyAdresse(), ...a })} style={{ cursor: "pointer", fontSize: 12, color: C.amber, marginRight: 10 }}>bearbeiten</span>
                   <span onClick={() => remove(a.id)} style={{ cursor: "pointer", fontSize: 12, color: C.loss }}>löschen</span>
                 </Td>
               </tr>
