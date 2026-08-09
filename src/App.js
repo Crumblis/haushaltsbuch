@@ -31,6 +31,18 @@ const fmtEUR = (n) =>
   (n < 0 ? "-" : "") +
   Math.abs(n).toLocaleString("de-DE", { style: "currency", currency: "EUR" }).replace("-", "");
 const monthKey = (d) => d.slice(0, 7);
+const istBlattkonto = (konto, alleKonten) => !alleKonten.some((k) => k.parentId === konto.id);
+const kontoTiefe = (konto, byId) => {
+  let tiefe = 0, k = konto;
+  while (k && k.parentId && byId[k.parentId]) { tiefe++; k = byId[k.parentId]; if (tiefe > 20) break; }
+  return tiefe;
+};
+const kontoPfadName = (konto, byId) => {
+  const teile = [];
+  let k = konto, i = 0;
+  while (k) { teile.unshift(k.name); if (!k.parentId || !byId[k.parentId]) break; k = byId[k.parentId]; i++; if (i > 20) break; }
+  return teile.join(" / ");
+};
 
 // ---------- Seed-Daten ----------
 const seed = {
@@ -102,7 +114,7 @@ async function loadData() {
     });
 
     return {
-      konten: konten.data || [],
+      konten: (konten.data || []).map((r) => ({ id: r.id, name: r.name, typ: r.typ, gruppe: r.gruppe, kostenart: r.kostenart, parentId: r.parent_id })),
       klassen: klassen.data || [],
       adressen: adressen.data || [],
       bankkonten: bankkonten.data || [],
@@ -124,7 +136,7 @@ async function loadData() {
 }
 
 // ---------- Einzelzeilen-Mapper JS -> DB-Spaltennamen ----------
-const mapKonto = (k) => ({ id: k.id, name: k.name, typ: k.typ, gruppe: k.gruppe || null, kostenart: k.kostenart || null });
+const mapKonto = (k) => ({ id: k.id, name: k.name, typ: k.typ, gruppe: k.gruppe || null, kostenart: k.kostenart || null, parent_id: k.parentId || null });
 const mapKlasse = (k) => ({ id: k.id, name: k.name, typ: k.typ });
 const mapAdresse = (a) => ({ id: a.id, name: a.name, rolle: a.rolle || null, iban: a.iban || null, notiz: a.notiz || null });
 const mapBankkonto = (b) => ({ id: b.id, name: b.name, startsaldo: Number(b.startsaldo) || 0 });
@@ -333,6 +345,66 @@ function Td({ children, align, mono }) {
     >
       {children}
     </td>
+  );
+}
+
+// Durchsuchbares Auswahlfeld: tippen zum Filtern, optional gruppiert. options: [{ value, label, group? }]
+function SearchSelect({ value, onChange, options, placeholder, required }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+  const selected = options.find((o) => o.value === value);
+
+  useEffect(() => {
+    const handler = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const filtered = options.filter((o) => o.label.toLowerCase().includes(query.toLowerCase()));
+  const gruppen = {};
+  filtered.forEach((o) => { const g = o.group || ""; (gruppen[g] = gruppen[g] || []).push(o); });
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative" }}>
+      <Input
+        value={open ? query : (selected ? selected.label : "")}
+        onFocus={() => { setOpen(true); setQuery(""); }}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        placeholder={placeholder || "– suchen –"}
+        required={required && !value}
+        autoComplete="off"
+      />
+      {open && (
+        <div
+          style={{
+            position: "absolute", zIndex: 30, top: "calc(100% + 2px)", left: 0, right: 0,
+            background: "#fff", border: `1px solid ${C.lineStrong}`, borderRadius: 4,
+            maxHeight: 240, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.14)",
+          }}
+        >
+          {filtered.length === 0 && <div style={{ padding: "8px 10px", fontSize: 13, color: C.inkSoft }}>Keine Treffer</div>}
+          {Object.entries(gruppen).map(([g, opts]) => (
+            <div key={g || "_"}>
+              {g && <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: C.inkSoft, padding: "5px 10px", background: C.paper }}>{g}</div>}
+              {opts.map((o) => (
+                <div
+                  key={o.value}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { onChange(o.value); setOpen(false); setQuery(""); }}
+                  style={{
+                    padding: "7px 10px", fontSize: 13.5, cursor: "pointer",
+                    background: o.value === value ? C.gainSoft : "transparent",
+                  }}
+                >
+                  {o.label}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -611,7 +683,7 @@ function Buchungen({ data, update, db, kontoById, adresseById, klasseById, bankB
   const [splitMode, setSplitMode] = useState(false);
   const [splitRows, setSplitRows] = useState([{ id: uid(), kontoId: "", betrag: "", klasseId: "" }]);
 
-  const kontenFuerArt = data.konten.filter((k) => k.typ === (form.art === "Einnahme" ? "Ertrag" : "Aufwand"));
+  const kontenFuerArt = data.konten.filter((k) => k.typ === (form.art === "Einnahme" ? "Ertrag" : "Aufwand") && istBlattkonto(k, data.konten));
   const splitNetto = splitRows.reduce((s, r) => {
     const k = kontoById[r.kontoId];
     if (!k) return s;
@@ -809,10 +881,13 @@ function Buchungen({ data, update, db, kontoById, adresseById, klasseById, bankB
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 10 }}>
                   <div>
                     <Label>Kategorie (Konto)</Label>
-                    <Select value={form.kontoId} onChange={(e) => setForm({ ...form, kontoId: e.target.value })} required>
-                      <option value="">– wählen –</option>
-                      {kontenFuerArt.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
-                    </Select>
+                    <SearchSelect
+                      value={form.kontoId}
+                      onChange={(v) => setForm({ ...form, kontoId: v })}
+                      options={kontenFuerArt.map((k) => ({ value: k.id, label: kontoPfadName(k, kontoById) }))}
+                      placeholder="– Kategorie suchen –"
+                      required
+                    />
                   </div>
                   <div>
                     <Label>Klasse (Kostenstelle/-träger)</Label>
@@ -829,15 +904,16 @@ function Buchungen({ data, update, db, kontoById, adresseById, klasseById, bankB
                   <Label>Splitt-Positionen – Richtung ergibt sich aus der Kategorie; negativer Betrag mindert die Kategorie (z. B. Rückzahlung auf ein Aufwandskonto)</Label>
                   {splitRows.map((row, i) => (
                     <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1.5fr auto", gap: 8, marginBottom: 6, alignItems: "center" }}>
-                      <Select value={row.kontoId} onChange={(e) => updateSplitRow(i, { kontoId: e.target.value })} required>
-                        <option value="">– Kategorie –</option>
-                        <optgroup label="Erträge">
-                          {data.konten.filter((k) => k.typ === "Ertrag").map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
-                        </optgroup>
-                        <optgroup label="Aufwendungen">
-                          {data.konten.filter((k) => k.typ === "Aufwand").map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
-                        </optgroup>
-                      </Select>
+                      <SearchSelect
+                        value={row.kontoId}
+                        onChange={(v) => updateSplitRow(i, { kontoId: v })}
+                        options={[
+                          ...data.konten.filter((k) => k.typ === "Ertrag" && istBlattkonto(k, data.konten)).map((k) => ({ value: k.id, label: kontoPfadName(k, kontoById), group: "Erträge" })),
+                          ...data.konten.filter((k) => k.typ === "Aufwand" && istBlattkonto(k, data.konten)).map((k) => ({ value: k.id, label: kontoPfadName(k, kontoById), group: "Aufwendungen" })),
+                        ]}
+                        placeholder="– Kategorie suchen –"
+                        required
+                      />
                       <Input type="number" step="0.01" placeholder="Betrag (neg. = Minderung)" value={row.betrag} onChange={(e) => updateSplitRow(i, { betrag: e.target.value })} required />
                       <Select value={row.klasseId} onChange={(e) => updateSplitRow(i, { klasseId: e.target.value })}>
                         <option value="">– keine Klasse –</option>
@@ -1131,7 +1207,8 @@ function Adressen({ data, update, db }) {
 
 // ---------- Stammdaten: Konten, Klassen, Bankkonten, Bilanzpositionen ----------
 function Stammdaten({ data, update, db }) {
-  const [kForm, setKForm] = useState({ id: null, name: "", typ: "Aufwand", gruppe: "", kostenart: "Variabel" });
+  const kontoById = Object.fromEntries(data.konten.map((k) => [k.id, k]));
+  const [kForm, setKForm] = useState({ id: null, name: "", typ: "Aufwand", gruppe: "", kostenart: "Variabel", parentId: "" });
   const [klForm, setKlForm] = useState({ id: null, name: "", typ: "Kostenstelle" });
   const [bForm, setBForm] = useState({ id: null, name: "", startsaldo: "" });
   const [pForm, setPForm] = useState({ id: null, name: "", typ: "Aktiva", wert: "" });
@@ -1158,12 +1235,21 @@ function Stammdaten({ data, update, db }) {
 
       <Card style={{ marginBottom: 16 }}>
         <Label>Konten (GuV-Kategorien: Erträge / Aufwendungen)</Label>
-        <form onSubmit={saveList("konten", kForm, setKForm, { id: null, name: "", typ: "Aufwand", gruppe: "", kostenart: "Variabel" })} style={{ margin: "10px 0" }}>
+        <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 8 }}>
+          Konten lassen sich verschachteln (z. B. Lebenshaltung → Lebensmittel → Nahrung). Bebuchbar in Buchungen ist immer nur die jeweils unterste Ebene.
+        </div>
+        <form onSubmit={saveList("konten", kForm, setKForm, { id: null, name: "", typ: "Aufwand", gruppe: "", kostenart: "Variabel", parentId: "" })} style={{ margin: "10px 0" }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 8 }}>
             <Input placeholder="Name" value={kForm.name} onChange={(e) => setKForm({ ...kForm, name: e.target.value })} required />
             <Select value={kForm.typ} onChange={(e) => setKForm({ ...kForm, typ: e.target.value })}>
               <option value="Aufwand">Aufwand</option><option value="Ertrag">Ertrag</option>
             </Select>
+            <SearchSelect
+              value={kForm.parentId || ""}
+              onChange={(v) => setKForm({ ...kForm, parentId: v })}
+              options={data.konten.filter((k) => k.typ === kForm.typ && k.id !== kForm.id).map((k) => ({ value: k.id, label: kontoPfadName(k, kontoById) }))}
+              placeholder="– oberste Ebene / suchen –"
+            />
             <Input placeholder="Gruppe (z. B. Fixkosten)" value={kForm.gruppe} onChange={(e) => setKForm({ ...kForm, gruppe: e.target.value })} />
             {kForm.typ === "Aufwand" && (
               <Select value={kForm.kostenart} onChange={(e) => setKForm({ ...kForm, kostenart: e.target.value })}>
@@ -1174,13 +1260,15 @@ function Stammdaten({ data, update, db }) {
           </div>
         </form>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><Th>Name</Th><Th>Typ</Th><Th>Gruppe</Th><Th>Kostenart</Th><Th></Th></tr></thead>
+          <thead><tr><Th>Name</Th><Th>Typ</Th><Th>Gruppe</Th><Th>Kostenart</Th><Th>Bebuchbar</Th><Th></Th></tr></thead>
           <tbody>
-            {data.konten.map((k) => (
+            {[...data.konten].sort((a, b) => a.typ.localeCompare(b.typ) || kontoPfadName(a, kontoById).localeCompare(kontoPfadName(b, kontoById))).map((k) => (
               <tr key={k.id}>
-                <Td>{k.name}</Td><Td>{k.typ}</Td><Td>{k.gruppe}</Td><Td>{k.typ === "Aufwand" ? (k.kostenart || "Variabel") : "–"}</Td>
+                <Td style={{ paddingLeft: 10 + kontoTiefe(k, kontoById) * 18 }}>{kontoTiefe(k, kontoById) > 0 ? "↳ " : ""}{k.name}</Td>
+                <Td>{k.typ}</Td><Td>{k.gruppe}</Td><Td>{k.typ === "Aufwand" ? (k.kostenart || "Variabel") : "–"}</Td>
+                <Td>{istBlattkonto(k, data.konten) ? "Ja" : "– Gruppe –"}</Td>
                 <Td align="right">
-                  <span onClick={() => setKForm(k)} style={{ cursor: "pointer", fontSize: 12, color: C.amber, marginRight: 10 }}>bearbeiten</span>
+                  <span onClick={() => setKForm({ ...k, parentId: k.parentId || "" })} style={{ cursor: "pointer", fontSize: 12, color: C.amber, marginRight: 10 }}>bearbeiten</span>
                   <span onClick={() => removeFrom("konten", k.id)} style={{ cursor: "pointer", fontSize: 12, color: C.loss }}>löschen</span>
                 </Td>
               </tr>
