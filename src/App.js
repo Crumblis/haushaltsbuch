@@ -510,19 +510,20 @@ export default function App() {
             >
               {n.label}
 
-              <div
+            </div>
+          ))}
+          <div
               onClick={() => supabase.auth.signOut()}
               style={{ padding: "9px 18px", cursor: "pointer", fontSize: 13.5, marginTop: 20, borderTop: "1px solid rgba(255,255,255,0.2)", opacity: 0.85 }}
             >
               Abmelden
             </div>
-            </div>
-          ))}
         </div>
         <div style={{ flex: 1, padding: 22, overflowX: 'auto' }}>
           {tab === 'dashboard' && (
             <Dashboard
               data={data}
+              
               bankSaldo={bankSaldo}
               bankById={bankById}
               nettovermoegenAt={nettovermoegenAt}
