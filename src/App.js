@@ -348,9 +348,6 @@ export default function App() {
     return () => listener.subscription.unsubscribe();
   }, []);
 
-  if (session === undefined) return <div style={{ padding: 40 }}>Lade…</div>;
-  if (!session) return <LoginScreen />;
-
   const [data, setData] = useState(null);
   const [tab, setTab] = useState('dashboard');
 
@@ -362,6 +359,8 @@ export default function App() {
   }, [data]);
 
   const update = useCallback((fn) => setData((d) => fn({ ...d })), []);
+  if (session === undefined) return <div style={{ padding: 40 }}>Lade…</div>;
+  if (!session) return <LoginScreen />;
 
   if (!data) {
     return (
