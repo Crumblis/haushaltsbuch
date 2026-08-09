@@ -131,7 +131,7 @@ async function loadData() {
       klassen: klassen.data || [],
       adressen: (adressen.data || []).map((r) => ({ id: r.id, name: r.name, iban: r.iban, notiz: r.notiz, strasse: r.strasse, plz: r.plz, stadt: r.stadt, land: r.land, kategorieId: r.kategorie_id })),
       adresskategorien: adresskategorien.data || [],
-      bankkonten: bankkonten.data || [],
+      bankkonten: (bankkonten.data || []).map((r) => ({ id: r.id, name: r.name, startsaldo: r.startsaldo, kreditinstitutId: r.kreditinstitut_id, kontotyp: r.kontotyp, kontonummer: r.kontonummer })),
       bilanzpositionen: bilanzpositionen.data || [],
       vermoegenswerte: (vermoegenswerte.data || []).map((r) => ({ id: r.id, name: r.name, typ: r.typ, kaufwert: r.kaufwert, kaufdatum: r.kaufdatum, isin: r.isin, anzahl: r.anzahl, aktuellerKurs: r.aktueller_kurs, kursDatum: r.kurs_datum, notiz: r.notiz })),
       vermoegensBuchungen: (vermoegensbuchungen.data || []).map((r) => ({ id: r.id, vermoegenswertId: r.vermoegenswert_id, datum: r.datum, wert: r.wert })),
@@ -154,7 +154,8 @@ const mapKonto = (k) => ({ id: k.id, name: k.name, typ: k.typ, gruppe: k.gruppe 
 const mapKlasse = (k) => ({ id: k.id, name: k.name, typ: k.typ });
 const mapAdresse = (a) => ({ id: a.id, name: a.name, iban: a.iban || null, notiz: a.notiz || null, strasse: a.strasse || null, plz: a.plz || null, stadt: a.stadt || null, land: a.land || null, kategorie_id: a.kategorieId || null });
 const mapAdresskategorie = (k) => ({ id: k.id, name: k.name });
-const mapBankkonto = (b) => ({ id: b.id, name: b.name, startsaldo: Number(b.startsaldo) || 0 });
+const mapBankkonto = (b) => ({ id: b.id, name: b.name, startsaldo: Number(b.startsaldo) || 0, kreditinstitut_id: b.kreditinstitutId || null, kontotyp: b.kontotyp || null, kontonummer: b.kontonummer || null });
+const KONTOTYPEN = ["Girokonto", "Gemeinschaftskonto", "Tagesgeld", "Festgeld", "Depot", "Kreditkarte", "Bargeld", "Sonstiges"];
 const mapBilanzposition = (p) => ({ id: p.id, name: p.name, typ: p.typ, wert: Number(p.wert) || 0 });
 const mapVermoegenswert = (a) => ({ id: a.id, name: a.name, typ: a.typ, kaufwert: numOrNull(a.kaufwert), kaufdatum: a.kaufdatum || null, isin: a.isin || null, anzahl: numOrNull(a.anzahl), aktueller_kurs: numOrNull(a.aktuellerKurs), kurs_datum: a.kursDatum || null, notiz: a.notiz || null });
 const mapVermoegensBuchung = (v) => ({ id: v.id, vermoegenswert_id: v.vermoegenswertId, datum: v.datum, wert: Number(v.wert) });
@@ -1282,7 +1283,8 @@ function Stammdaten({ data, update, db }) {
   const kontoById = Object.fromEntries(data.konten.map((k) => [k.id, k]));
   const [kForm, setKForm] = useState({ id: null, name: "", typ: "Aufwand", gruppe: "", kostenart: "Variabel", parentId: "" });
   const [klForm, setKlForm] = useState({ id: null, name: "", typ: "Kostenstelle" });
-  const [bForm, setBForm] = useState({ id: null, name: "", startsaldo: "" });
+  const [bForm, setBForm] = useState({ id: null, name: "", startsaldo: "", kreditinstitutId: "", kontotyp: "Girokonto", kontonummer: "" });
+  const [sichtbareKontonummern, setSichtbareKontonummern] = useState({});
   const [pForm, setPForm] = useState({ id: null, name: "", typ: "Aktiva", wert: "" });
 
   const saveList = (listName, form, setForm, empty) => (e) => {
@@ -1378,21 +1380,49 @@ function Stammdaten({ data, update, db }) {
 
       <Card style={{ marginBottom: 16 }}>
         <Label>Bankkonten</Label>
-        <form onSubmit={saveList("bankkonten", bForm, setBForm, { id: null, name: "", startsaldo: "" })} style={{ margin: "10px 0" }}>
+        <form onSubmit={saveList("bankkonten", bForm, setBForm, { id: null, name: "", startsaldo: "", kreditinstitutId: "", kontotyp: "Girokonto", kontonummer: "" })} style={{ margin: "10px 0" }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 8 }}>
             <Input placeholder="Name" value={bForm.name} onChange={(e) => setBForm({ ...bForm, name: e.target.value })} required />
+            <Select value={bForm.kontotyp} onChange={(e) => setBForm({ ...bForm, kontotyp: e.target.value })}>
+              {KONTOTYPEN.map((t) => <option key={t} value={t}>{t}</option>)}
+            </Select>
+            <SearchSelect
+              value={bForm.kreditinstitutId}
+              onChange={(v) => setBForm({ ...bForm, kreditinstitutId: v })}
+              options={data.adressen.map((a) => ({ value: a.id, label: a.name }))}
+              placeholder="Kreditinstitut suchen"
+            />
             <Input type="number" step="0.01" placeholder="Startsaldo (€)" value={bForm.startsaldo} onChange={(e) => setBForm({ ...bForm, startsaldo: e.target.value })} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 8 }}>
+            <Input placeholder="Kontonummer / IBAN (optional)" value={bForm.kontonummer} onChange={(e) => setBForm({ ...bForm, kontonummer: e.target.value })} />
             <Btn primary type="submit">{bForm.id ? "Speichern" : "Hinzufügen"}</Btn>
           </div>
         </form>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><Th>Name</Th><Th align="right">Startsaldo</Th><Th></Th></tr></thead>
+          <thead><tr><Th>Name</Th><Th>Typ</Th><Th>Kreditinstitut</Th><Th>Kontonummer</Th><Th align="right">Startsaldo</Th><Th></Th></tr></thead>
           <tbody>
             {data.bankkonten.map((b) => (
               <tr key={b.id}>
-                <Td>{b.name}</Td><Td align="right" mono>{fmtEUR(Number(b.startsaldo) || 0)}</Td>
+                <Td>{b.name}</Td>
+                <Td>{b.kontotyp || "–"}</Td>
+                <Td>{data.adressen.find((a) => a.id === b.kreditinstitutId)?.name || "–"}</Td>
+                <Td mono>
+                  {b.kontonummer
+                    ? (sichtbareKontonummern[b.id] ? b.kontonummer : "•".repeat(Math.max(4, b.kontonummer.length - 4)) + b.kontonummer.slice(-4))
+                    : "–"}
+                  {b.kontonummer && (
+                    <span
+                      onClick={() => setSichtbareKontonummern({ ...sichtbareKontonummern, [b.id]: !sichtbareKontonummern[b.id] })}
+                      style={{ cursor: "pointer", marginLeft: 8, fontSize: 11, color: C.green }}
+                    >
+                      {sichtbareKontonummern[b.id] ? "verbergen" : "anzeigen"}
+                    </span>
+                  )}
+                </Td>
+                <Td align="right" mono>{fmtEUR(Number(b.startsaldo) || 0)}</Td>
                 <Td align="right">
-                  <span onClick={() => setBForm(b)} style={{ cursor: "pointer", fontSize: 12, color: C.amber, marginRight: 10 }}>bearbeiten</span>
+                  <span onClick={() => setBForm({ id: null, name: "", startsaldo: "", kreditinstitutId: "", kontotyp: "Girokonto", kontonummer: "", ...b })} style={{ cursor: "pointer", fontSize: 12, color: C.amber, marginRight: 10 }}>bearbeiten</span>
                   <span onClick={() => removeFrom("bankkonten", b.id)} style={{ cursor: "pointer", fontSize: 12, color: C.loss }}>löschen</span>
                 </Td>
               </tr>
