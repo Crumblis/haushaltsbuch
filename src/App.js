@@ -43,6 +43,21 @@ const kontoPfadName = (konto, byId) => {
   while (k) { teile.unshift(k.name); if (!k.parentId || !byId[k.parentId]) break; k = byId[k.parentId]; i++; if (i > 20) break; }
   return teile.join(" / ");
 };
+const bookingPostings = (b) => {
+  if (b.splits && b.splits.length > 0) return b.splits;
+  if (b.art === "Einnahme" || b.art === "Ausgabe") return [{ kontoId: b.kontoId, betrag: b.betrag, klasseId: b.klasseId }];
+  return [];
+};
+const naechsteBuchungsnummer = (buchungen, datum) => {
+  const jahr = (datum || todayISO()).slice(0, 4);
+  const praefix = `B-${jahr}-`;
+  const maxNr = buchungen.reduce((max, b) => {
+    if (!b.buchungsnummer || !b.buchungsnummer.startsWith(praefix)) return max;
+    const n = parseInt(b.buchungsnummer.slice(praefix.length), 10);
+    return isNaN(n) ? max : Math.max(max, n);
+  }, 0);
+  return `${praefix}${String(maxNr + 1).padStart(4, "0")}`;
+};
 
 // ---------- Seed-Daten ----------
 const LAENDER = [
@@ -140,7 +155,7 @@ async function loadData() {
       buchungen: (buchungen.data || []).map((r) => ({
         id: r.id, datum: r.datum, betrag: r.betrag, art: r.art, kontoId: r.konto_id, adresseId: r.adresse_id, klasseId: r.klasse_id,
         bankkontoId: r.bankkonto_id, vonBankkontoId: r.von_bankkonto_id, nachBankkontoId: r.nach_bankkonto_id, vermoegenswertId: r.vermoegenswert_id,
-        beschreibung: r.beschreibung, splits: splitsProBuchung[r.id] || [],
+        beschreibung: r.beschreibung, buchungsnummer: r.buchungsnummer, splits: splitsProBuchung[r.id] || [],
       })),
     };
   } catch (e) {
@@ -161,7 +176,7 @@ const mapVermoegenswert = (a) => ({ id: a.id, name: a.name, typ: a.typ, kaufwert
 const mapVermoegensBuchung = (v) => ({ id: v.id, vermoegenswert_id: v.vermoegenswertId, datum: v.datum, wert: Number(v.wert) });
 const mapDarlehen = (l) => ({ id: l.id, name: l.name, glaeubiger: l.glaeubiger || null, ursprungsbetrag: Number(l.ursprungsbetrag) || 0, zinssatz: numOrNull(l.zinssatz), rate_monatlich: numOrNull(l.rateMonatlich), startdatum: l.startdatum || null, notiz: l.notiz || null });
 const mapSondertilgung = (s) => ({ id: s.id, darlehen_id: s.darlehenId, datum: s.datum, betrag: Number(s.betrag) || 0 });
-const mapBuchung = (b) => ({ id: b.id, datum: b.datum, betrag: Number(b.betrag) || 0, art: b.art, konto_id: b.kontoId || null, adresse_id: b.adresseId || null, klasse_id: b.klasseId || null, bankkonto_id: b.bankkontoId || null, von_bankkonto_id: b.vonBankkontoId || null, nach_bankkonto_id: b.nachBankkontoId || null, vermoegenswert_id: b.vermoegenswertId || null, beschreibung: b.beschreibung || null });
+const mapBuchung = (b) => ({ id: b.id, datum: b.datum, betrag: Number(b.betrag) || 0, art: b.art, konto_id: b.kontoId || null, adresse_id: b.adresseId || null, klasse_id: b.klasseId || null, bankkonto_id: b.bankkontoId || null, von_bankkonto_id: b.vonBankkontoId || null, nach_bankkonto_id: b.nachBankkontoId || null, vermoegenswert_id: b.vermoegenswertId || null, beschreibung: b.beschreibung || null, buchungsnummer: b.buchungsnummer || null });
 const mapSplit = (s, buchungId) => ({ id: s.id || uid(), buchung_id: buchungId, konto_id: s.kontoId || null, betrag: Number(s.betrag) || 0, klasse_id: s.klasseId || null });
 
 // ---------- Generische Einzelzeilen-Operationen ----------
@@ -427,7 +442,8 @@ function SearchSelect({ value, onChange, options, placeholder, required }) {
 
 const NAV = [
   { id: "dashboard", label: "Übersicht" },
-  { id: "buchungen", label: "Buchungen" },
+  { id: "buchungen", label: "Buchung erfassen" },
+  { id: "buchungsliste", label: "Buchungsliste" },
   { id: "import", label: "Import" },
   { id: "adressen", label: "Adressbuch" },
   { id: "anlagen", label: "Anlagenregister" },
@@ -442,6 +458,7 @@ export default function App() {
   const [session, setSession] = useState(undefined);
   const [data, setData] = useState(null);
   const [tab, setTab] = useState("dashboard");
+  const [editBuchungId, setEditBuchungId] = useState(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -578,7 +595,8 @@ export default function App() {
         </div>
         <div style={{ flex: 1, padding: 22, overflowX: "auto" }}>
           {tab === "dashboard" && <Dashboard data={data} bankSaldo={bankSaldo} bankById={bankById} nettovermoegenAt={nettovermoegenAt} />}
-          {tab === "buchungen" && <Buchungen data={data} update={update} db={db} kontoById={kontoById} adresseById={adresseById} klasseById={klasseById} bankById={bankById} assetValue={assetValue} />}
+          {tab === "buchungen" && <Buchungen data={data} update={update} db={db} kontoById={kontoById} assetValue={assetValue} editBuchungId={editBuchungId} onConsumedEdit={() => setEditBuchungId(null)} />}
+          {tab === "buchungsliste" && <Buchungsliste data={data} update={update} db={db} kontoById={kontoById} adresseById={adresseById} bankById={bankById} onEdit={(id) => { setEditBuchungId(id); setTab("buchungen"); }} />}
           {tab === "import" && <ImportCSV data={data} update={update} />}
           {tab === "adressen" && <Adressen data={data} update={update} db={db} />}
           {tab === "anlagen" && <Anlagenregister data={data} update={update} db={db} assetValue={assetValue} />}
@@ -693,39 +711,60 @@ function emptyBuchung(data) {
   };
 }
 
-function Buchungen({ data, update, db, kontoById, adresseById, klasseById, bankById, assetValue }) {
+function Buchungen({ data, update, db, kontoById, assetValue, editBuchungId, onConsumedEdit }) {
+  const [belegart, setBelegart] = useState("Buchung"); // Buchung | Umbuchung | Investition
   const [form, setForm] = useState(() => emptyBuchung(data));
-  const [filterMonat, setFilterMonat] = useState("");
   const [editId, setEditId] = useState(null);
-  const [splitMode, setSplitMode] = useState(false);
-  const [splitRows, setSplitRows] = useState([{ id: uid(), kontoId: "", betrag: "", klasseId: "" }]);
+  const [positionen, setPositionen] = useState([{ id: uid(), kontoId: "", betrag: "", klasseId: "" }]);
 
-  const kontenFuerArt = data.konten.filter((k) => k.typ === (form.art === "Einnahme" ? "Ertrag" : "Aufwand") && istBlattkonto(k, data.konten));
-  const splitNetto = splitRows.reduce((s, r) => {
+  const netto = positionen.reduce((s, r) => {
     const k = kontoById[r.kontoId];
     if (!k) return s;
     const betrag = Number(r.betrag) || 0;
     return s + (k.typ === "Ertrag" ? betrag : -betrag);
   }, 0);
 
+  const buchungsnummer = editId ? form.buchungsnummer : naechsteBuchungsnummer(data.buchungen, form.datum);
+
   const resetForm = () => {
     setForm(emptyBuchung(data));
-    setSplitMode(false);
-    setSplitRows([{ id: uid(), kontoId: "", betrag: "", klasseId: "" }]);
+    setBelegart("Buchung");
+    setPositionen([{ id: uid(), kontoId: "", betrag: "", klasseId: "" }]);
     setEditId(null);
   };
 
-  const addSplitRow = () => setSplitRows([...splitRows, { id: uid(), kontoId: "", betrag: "", klasseId: "" }]);
-  const removeSplitRow = (i) => setSplitRows(splitRows.filter((_, idx) => idx !== i));
-  const updateSplitRow = (i, patch) => setSplitRows(splitRows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  const addPosition = () => setPositionen([...positionen, { id: uid(), kontoId: "", betrag: "", klasseId: "" }]);
+  const removePosition = (i) => setPositionen(positionen.filter((_, idx) => idx !== i));
+  const updatePosition = (i, patch) => setPositionen(positionen.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+
+  const startEdit = (b) => {
+    setForm({ ...emptyBuchung(data), ...b });
+    setEditId(b.id);
+    if (b.art === "Umbuchung") setBelegart("Umbuchung");
+    else if (b.art === "Investition") setBelegart("Investition");
+    else {
+      setBelegart("Buchung");
+      if (b.splits && b.splits.length > 0) setPositionen(b.splits.map((s) => ({ ...s })));
+      else setPositionen([{ id: uid(), kontoId: b.kontoId, betrag: Number(b.betrag), klasseId: b.klasseId }]);
+    }
+  };
+
+  useEffect(() => {
+    if (editBuchungId) {
+      const b = data.buchungen.find((x) => x.id === editBuchungId);
+      if (b) startEdit(b);
+      onConsumedEdit();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editBuchungId]);
 
   const submit = (e) => {
     e.preventDefault();
 
-    if (form.art === "Umbuchung") {
+    if (belegart === "Umbuchung") {
       if (!form.betrag || !form.vonBankkontoId || !form.nachBankkontoId || form.vonBankkontoId === form.nachBankkontoId) return;
       const rec = {
-        id: editId || form.id || uid(), datum: form.datum, art: "Umbuchung", betrag: Math.abs(Number(form.betrag)),
+        id: editId || form.id || uid(), buchungsnummer, datum: form.datum, art: "Umbuchung", betrag: Math.abs(Number(form.betrag)),
         vonBankkontoId: form.vonBankkontoId, nachBankkontoId: form.nachBankkontoId,
         beschreibung: form.beschreibung, kontoId: "", adresseId: "", klasseId: "", bankkontoId: "", splits: [],
       };
@@ -735,11 +774,11 @@ function Buchungen({ data, update, db, kontoById, adresseById, klasseById, bankB
       return;
     }
 
-    if (form.art === "Investition") {
+    if (belegart === "Investition") {
       if (!form.betrag || !form.bankkontoId || !form.vermoegenswertId) return;
       const asset = data.vermoegenswerte.find((a) => a.id === form.vermoegenswertId);
       const rec = {
-        id: editId || form.id || uid(), datum: form.datum, art: "Investition", betrag: Math.abs(Number(form.betrag)),
+        id: editId || form.id || uid(), buchungsnummer, datum: form.datum, art: "Investition", betrag: Math.abs(Number(form.betrag)),
         bankkontoId: form.bankkontoId, vermoegenswertId: form.vermoegenswertId, beschreibung: form.beschreibung,
         kontoId: "", adresseId: form.adresseId, klasseId: "", splits: [],
       };
@@ -760,119 +799,57 @@ function Buchungen({ data, update, db, kontoById, adresseById, klasseById, bankB
       return;
     }
 
-    // Einnahme / Ausgabe (ggf. mit Splitt)
+    // Buchung mit einheitlichen Positionen (ersetzt vorheriges Splitt-/Einzelmodell)
     if (!form.bankkontoId) return;
-    if (splitMode) {
-      const gueltig = splitRows.filter((r) => r.kontoId && Number(r.betrag) !== 0 && r.betrag !== "");
-      if (gueltig.length === 0) return;
-      const netto = gueltig.reduce((s, r) => {
-        const k = kontoById[r.kontoId];
-        const betrag = Number(r.betrag);
-        return s + (k && k.typ === "Ertrag" ? betrag : -betrag);
-      }, 0);
-      const rec = {
-        id: editId || form.id || uid(), datum: form.datum, art: netto >= 0 ? "Einnahme" : "Ausgabe", betrag: Math.abs(netto),
-        bankkontoId: form.bankkontoId, adresseId: form.adresseId, beschreibung: form.beschreibung,
-        kontoId: "", klasseId: "", splits: gueltig.map((r) => ({ id: r.id || uid(), kontoId: r.kontoId, betrag: Number(r.betrag), klasseId: r.klasseId })),
-      };
-      update((d) => ({ ...d, buchungen: editId ? d.buchungen.map((b) => (b.id === editId ? rec : b)) : [rec, ...d.buchungen] }));
-      if (editId) db.buchungen.update(rec); else db.buchungen.add(rec);
-      resetForm();
-      return;
-    }
-    if (!form.betrag || !form.kontoId) return;
-    const rec = { ...form, id: editId || form.id || uid(), betrag: Math.abs(Number(form.betrag)), splits: [] };
+    const gueltig = positionen.filter((r) => r.kontoId && Number(r.betrag) !== 0 && r.betrag !== "");
+    if (gueltig.length === 0) return;
+    const nettoGueltig = gueltig.reduce((s, r) => {
+      const k = kontoById[r.kontoId];
+      const betrag = Number(r.betrag);
+      return s + (k && k.typ === "Ertrag" ? betrag : -betrag);
+    }, 0);
+    const rec = {
+      id: editId || form.id || uid(), buchungsnummer, datum: form.datum, art: nettoGueltig >= 0 ? "Einnahme" : "Ausgabe", betrag: Math.abs(nettoGueltig),
+      bankkontoId: form.bankkontoId, adresseId: form.adresseId, beschreibung: form.beschreibung,
+      kontoId: "", klasseId: "", splits: gueltig.map((r) => ({ id: r.id || uid(), kontoId: r.kontoId, betrag: Number(r.betrag), klasseId: r.klasseId })),
+    };
     update((d) => ({ ...d, buchungen: editId ? d.buchungen.map((b) => (b.id === editId ? rec : b)) : [rec, ...d.buchungen] }));
     if (editId) db.buchungen.update(rec); else db.buchungen.add(rec);
     resetForm();
   };
 
-  const remove = (id) => {
-    update((d) => ({ ...d, buchungen: d.buchungen.filter((b) => b.id !== id) }));
-    db.buchungen.remove(id); // Splitt-Positionen räumt "on delete cascade" in der DB automatisch mit auf
-  };
-  const startEdit = (b) => {
-    setForm({ ...emptyBuchung(data), ...b });
-    setEditId(b.id);
-    if (b.splits && b.splits.length > 0) {
-      setSplitMode(true);
-      setSplitRows(b.splits.map((s) => ({ ...s })));
-    } else {
-      setSplitMode(false);
-      setSplitRows([{ id: uid(), kontoId: "", betrag: "", klasseId: "" }]);
-    }
-  };
-
-  const list = data.buchungen
-    .filter((b) => !filterMonat || monthKey(b.datum) === filterMonat)
-    .sort((a, b) => b.datum.localeCompare(a.datum));
-
-  const kontoLabel = (b) => {
-    if (b.art === "Umbuchung") return `${bankById[b.vonBankkontoId]?.name || "?"} → ${bankById[b.nachBankkontoId]?.name || "?"}`;
-    if (b.art === "Investition") return `→ ${data.vermoegenswerte.find((a) => a.id === b.vermoegenswertId)?.name || "?"}`;
-    if (b.splits && b.splits.length > 0) return `Splitt (${b.splits.length} Positionen)`;
-    return kontoById[b.kontoId]?.name || "–";
-  };
-  const bankLabel = (b) => {
-    if (b.art === "Umbuchung") return "–";
-    if (b.art === "Investition") return bankById[b.bankkontoId]?.name || "–";
-    return bankById[b.bankkontoId]?.name || "–";
-  };
-  const betragVorzeichen = (b) => (b.art === "Einnahme" ? Number(b.betrag) : -Number(b.betrag));
-
   return (
     <div>
-      <h2 style={{ fontFamily: FONT_SERIF, fontWeight: 500, marginTop: 0 }}>Buchungen</h2>
+      <h2 style={{ fontFamily: FONT_SERIF, fontWeight: 500, marginTop: 0 }}>Buchung erfassen</h2>
 
-      <Card style={{ marginBottom: 18 }}>
-        <form onSubmit={submit}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 10 }}>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ background: C.green, color: "#fff", padding: "16px 22px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+          <div>
+            <div style={{ fontFamily: FONT_SERIF, fontSize: 18 }}>{editId ? "Beleg bearbeiten" : "Neuer Beleg"}</div>
+            <div style={{ fontSize: 12, opacity: 0.8, letterSpacing: "0.03em", textTransform: "uppercase" }}>Belegkopf</div>
+          </div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 13, background: "rgba(255,255,255,0.16)", padding: "6px 14px", borderRadius: 20 }}>
+            {buchungsnummer}
+          </div>
+        </div>
+
+        <form onSubmit={submit} style={{ padding: 22 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 16 }}>
             <div>
               <Label>Datum</Label>
               <Input type="date" value={form.datum} onChange={(e) => setForm({ ...form, datum: e.target.value })} required />
             </div>
             <div>
-              <Label>Art</Label>
-              <Select
-                value={form.art}
-                onChange={(e) => {
-                  const art = e.target.value;
-                  const passendesKonto = data.konten.find((k) => k.typ === (art === "Einnahme" ? "Ertrag" : "Aufwand"));
-                  setForm({ ...form, art, kontoId: passendesKonto?.id || "" });
-                  setSplitMode(false);
-                }}
-              >
-                <option value="Ausgabe">Ausgabe</option>
-                <option value="Einnahme">Einnahme</option>
+              <Label>Belegart</Label>
+              <Select value={belegart} onChange={(e) => setBelegart(e.target.value)}>
+                <option value="Buchung">Buchung (Einnahme/Ausgabe)</option>
                 <option value="Umbuchung">Umbuchung (zwischen eigenen Konten)</option>
                 <option value="Investition">Investition (Kauf Vermögenswert)</option>
               </Select>
             </div>
-            {form.art !== "Umbuchung" && !splitMode && (
-              <div>
-                <Label>Betrag (€)</Label>
-                <Input type="number" step="0.01" min="0" value={form.betrag} onChange={(e) => setForm({ ...form, betrag: e.target.value })} required />
-              </div>
-            )}
-            {form.art !== "Umbuchung" && splitMode && (
-              <div>
-                <Label>Netto-Betrag (Bankkonto)</Label>
-                <div style={{ padding: "7px 9px", fontFamily: FONT_MONO, fontSize: 15 }}>
-                  <Money value={splitNetto} />
-                </div>
-              </div>
-            )}
-            {form.art === "Umbuchung" && (
-              <div>
-                <Label>Betrag (€)</Label>
-                <Input type="number" step="0.01" min="0" value={form.betrag} onChange={(e) => setForm({ ...form, betrag: e.target.value })} required />
-              </div>
-            )}
-          </div>
 
-          {(form.art === "Einnahme" || form.art === "Ausgabe") && (
-            <>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 10 }}>
+            {belegart === "Buchung" && (
+              <>
                 <div>
                   <Label>Bankkonto</Label>
                   <Select value={form.bankkontoId} onChange={(e) => setForm({ ...form, bankkontoId: e.target.value })} required>
@@ -881,162 +858,248 @@ function Buchungen({ data, update, db, kontoById, adresseById, klasseById, bankB
                 </div>
                 <div>
                   <Label>Adresse (Empfänger/Sender)</Label>
-                  <Select value={form.adresseId} onChange={(e) => setForm({ ...form, adresseId: e.target.value })}>
-                    <option value="">– keine –</option>
-                    {data.adressen.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  <SearchSelect
+                    value={form.adresseId}
+                    onChange={(v) => setForm({ ...form, adresseId: v })}
+                    options={data.adressen.map((a) => ({ value: a.id, label: a.name }))}
+                    placeholder="– keine / suchen –"
+                  />
+                </div>
+              </>
+            )}
+
+            {belegart === "Umbuchung" && (
+              <>
+                <div>
+                  <Label>Von Bankkonto</Label>
+                  <Select value={form.vonBankkontoId} onChange={(e) => setForm({ ...form, vonBankkontoId: e.target.value })} required>
+                    {data.bankkonten.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                   </Select>
                 </div>
-                <div style={{ display: "flex", alignItems: "flex-end" }}>
-                  <label style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                    <input type="checkbox" checked={splitMode} onChange={(e) => setSplitMode(e.target.checked)} />
-                    Splittbuchung (mehrere Kategorien)
-                  </label>
+                <div>
+                  <Label>Nach Bankkonto</Label>
+                  <Select value={form.nachBankkontoId} onChange={(e) => setForm({ ...form, nachBankkontoId: e.target.value })} required>
+                    {data.bankkonten.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                  </Select>
                 </div>
-              </div>
+                <div>
+                  <Label>Betrag (€)</Label>
+                  <Input type="number" step="0.01" min="0" value={form.betrag} onChange={(e) => setForm({ ...form, betrag: e.target.value })} required />
+                </div>
+              </>
+            )}
 
-              {!splitMode && (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 10 }}>
-                  <div>
-                    <Label>Kategorie (Konto)</Label>
+            {belegart === "Investition" && (
+              <>
+                <div>
+                  <Label>Bankkonto (Quelle)</Label>
+                  <Select value={form.bankkontoId} onChange={(e) => setForm({ ...form, bankkontoId: e.target.value })} required>
+                    {data.bankkonten.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                  </Select>
+                </div>
+                <div>
+                  <Label>Vermögenswert (Ziel)</Label>
+                  <SearchSelect
+                    value={form.vermoegenswertId}
+                    onChange={(v) => setForm({ ...form, vermoegenswertId: v })}
+                    options={data.vermoegenswerte.map((a) => ({ value: a.id, label: `${a.name} (${a.typ})` }))}
+                    placeholder="– suchen –"
+                    required
+                  />
+                </div>
+                <div>
+                  <Label>Betrag (€)</Label>
+                  <Input type="number" step="0.01" min="0" value={form.betrag} onChange={(e) => setForm({ ...form, betrag: e.target.value })} required />
+                </div>
+                <div>
+                  <Label>Adresse (Verkäufer, optional)</Label>
+                  <SearchSelect
+                    value={form.adresseId}
+                    onChange={(v) => setForm({ ...form, adresseId: v })}
+                    options={data.adressen.map((a) => ({ value: a.id, label: a.name }))}
+                    placeholder="– keine / suchen –"
+                  />
+                </div>
+              </>
+            )}
+          </div>
+
+          {belegart === "Buchung" && (
+            <div style={{ marginBottom: 16 }}>
+              <Label>Rechnungspositionen</Label>
+              <div style={{ border: `1px solid ${C.line}`, borderRadius: 6, overflow: "hidden", marginTop: 4 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "2.2fr 1fr 1.4fr auto", background: C.paper, padding: "7px 12px", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: C.inkSoft }}>
+                  <div>Kategorie</div><div>Betrag (€)</div><div>Klasse</div><div></div>
+                </div>
+                {positionen.map((row, i) => (
+                  <div key={row.id} style={{ display: "grid", gridTemplateColumns: "2.2fr 1fr 1.4fr auto", gap: 8, padding: "9px 12px", alignItems: "center", borderTop: `1px solid ${C.line}` }}>
                     <SearchSelect
-                      value={form.kontoId}
-                      onChange={(v) => setForm({ ...form, kontoId: v })}
-                      options={kontenFuerArt.map((k) => ({ value: k.id, label: kontoPfadName(k, kontoById) }))}
+                      value={row.kontoId}
+                      onChange={(v) => updatePosition(i, { kontoId: v })}
+                      options={[
+                        ...data.konten.filter((k) => k.typ === "Ertrag" && istBlattkonto(k, data.konten)).map((k) => ({ value: k.id, label: kontoPfadName(k, kontoById), group: "Erträge" })),
+                        ...data.konten.filter((k) => k.typ === "Aufwand" && istBlattkonto(k, data.konten)).map((k) => ({ value: k.id, label: kontoPfadName(k, kontoById), group: "Aufwendungen" })),
+                      ]}
                       placeholder="– Kategorie suchen –"
                       required
                     />
-                  </div>
-                  <div>
-                    <Label>Klasse (Kostenstelle/-träger)</Label>
-                    <Select value={form.klasseId} onChange={(e) => setForm({ ...form, klasseId: e.target.value })}>
+                    <Input type="number" step="0.01" placeholder="neg. = Minderung" value={row.betrag} onChange={(e) => updatePosition(i, { betrag: e.target.value })} required />
+                    <Select value={row.klasseId} onChange={(e) => updatePosition(i, { klasseId: e.target.value })}>
                       <option value="">– keine –</option>
-                      {data.klassen.map((k) => <option key={k.id} value={k.id}>{k.name} ({k.typ})</option>)}
+                      {data.klassen.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
                     </Select>
+                    {positionen.length > 1
+                      ? <span onClick={() => removePosition(i)} style={{ cursor: "pointer", color: C.loss, fontSize: 12 }}>entfernen</span>
+                      : <span />}
+                  </div>
+                ))}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "11px 12px", background: C.paper, borderTop: `1px solid ${C.lineStrong}` }}>
+                  <Btn onClick={addPosition}>+ Position</Btn>
+                  <div style={{ fontSize: 13 }}>
+                    <span style={{ color: C.inkSoft, marginRight: 8 }}>Netto-Betrag (Bankkonto)</span>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 600 }}><Money value={netto} /></span>
                   </div>
                 </div>
-              )}
-
-              {splitMode && (
-                <div style={{ marginBottom: 10, border: `1px solid ${C.line}`, borderRadius: 6, padding: 10, background: C.paper }}>
-                  <Label>Splitt-Positionen – Richtung ergibt sich aus der Kategorie; negativer Betrag mindert die Kategorie (z. B. Rückzahlung auf ein Aufwandskonto)</Label>
-                  {splitRows.map((row, i) => (
-                    <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1.5fr auto", gap: 8, marginBottom: 6, alignItems: "center" }}>
-                      <SearchSelect
-                        value={row.kontoId}
-                        onChange={(v) => updateSplitRow(i, { kontoId: v })}
-                        options={[
-                          ...data.konten.filter((k) => k.typ === "Ertrag" && istBlattkonto(k, data.konten)).map((k) => ({ value: k.id, label: kontoPfadName(k, kontoById), group: "Erträge" })),
-                          ...data.konten.filter((k) => k.typ === "Aufwand" && istBlattkonto(k, data.konten)).map((k) => ({ value: k.id, label: kontoPfadName(k, kontoById), group: "Aufwendungen" })),
-                        ]}
-                        placeholder="– Kategorie suchen –"
-                        required
-                      />
-                      <Input type="number" step="0.01" placeholder="Betrag (neg. = Minderung)" value={row.betrag} onChange={(e) => updateSplitRow(i, { betrag: e.target.value })} required />
-                      <Select value={row.klasseId} onChange={(e) => updateSplitRow(i, { klasseId: e.target.value })}>
-                        <option value="">– keine Klasse –</option>
-                        {data.klassen.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
-                      </Select>
-                      <span onClick={() => removeSplitRow(i)} style={{ cursor: "pointer", color: C.loss, fontSize: 12 }}>entfernen</span>
-                    </div>
-                  ))}
-                  <Btn onClick={addSplitRow} style={{ marginTop: 4 }}>+ Position hinzufügen</Btn>
-                </div>
-              )}
-            </>
-          )}
-
-          {form.art === "Umbuchung" && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 10 }}>
-              <div>
-                <Label>Von Bankkonto</Label>
-                <Select value={form.vonBankkontoId} onChange={(e) => setForm({ ...form, vonBankkontoId: e.target.value })} required>
-                  {data.bankkonten.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                </Select>
               </div>
-              <div>
-                <Label>Nach Bankkonto</Label>
-                <Select value={form.nachBankkontoId} onChange={(e) => setForm({ ...form, nachBankkontoId: e.target.value })} required>
-                  {data.bankkonten.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                </Select>
+              <div style={{ fontSize: 12, color: C.inkSoft, marginTop: 6 }}>
+                Richtung ergibt sich aus der Kategorie (Ertrag = Zugang, Aufwand = Abgang). Negativer Betrag mindert eine Kategorie (z. B. Rückzahlung).
               </div>
             </div>
           )}
 
-          {form.art === "Investition" && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 10 }}>
-              <div>
-                <Label>Bankkonto (Quelle)</Label>
-                <Select value={form.bankkontoId} onChange={(e) => setForm({ ...form, bankkontoId: e.target.value })} required>
-                  {data.bankkonten.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                </Select>
-              </div>
-              <div>
-                <Label>Vermögenswert (Ziel)</Label>
-                <Select value={form.vermoegenswertId} onChange={(e) => setForm({ ...form, vermoegenswertId: e.target.value })} required>
-                  <option value="">– wählen –</option>
-                  {data.vermoegenswerte.map((a) => <option key={a.id} value={a.id}>{a.name} ({a.typ})</option>)}
-                </Select>
-              </div>
-              <div>
-                <Label>Adresse (Verkäufer, optional)</Label>
-                <Select value={form.adresseId} onChange={(e) => setForm({ ...form, adresseId: e.target.value })}>
-                  <option value="">– keine –</option>
-                  {data.adressen.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </Select>
-              </div>
-            </div>
-          )}
-
-          <div style={{ marginBottom: 12 }}>
+          <div style={{ marginBottom: 16 }}>
             <Label>Beschreibung</Label>
             <Input value={form.beschreibung} onChange={(e) => setForm({ ...form, beschreibung: e.target.value })} placeholder="z. B. Miete August" />
           </div>
+
           <div style={{ display: "flex", gap: 8 }}>
-            <Btn type="submit" primary>{editId ? "Buchung speichern" : "Buchung erfassen"}</Btn>
+            <Btn type="submit" primary>{editId ? "Beleg speichern" : "Beleg buchen"}</Btn>
             {editId && <Btn onClick={resetForm}>Abbrechen</Btn>}
           </div>
-          {form.art === "Investition" && data.vermoegenswerte.find((a) => a.id === form.vermoegenswertId)?.typ === "Wertpapier" && (
+          {belegart === "Investition" && data.vermoegenswerte.find((a) => a.id === form.vermoegenswertId)?.typ === "Wertpapier" && (
             <div style={{ fontSize: 12, color: C.inkSoft, marginTop: 8 }}>
               Hinweis: Bei Wertpapieren wird hier nur der Kaufbetrag vom Bankkonto abgebucht. Stückzahl/Kurs bitte zusätzlich im Anlagenregister pflegen, damit der Depotwert stimmt.
             </div>
           )}
         </form>
       </Card>
+    </div>
+  );
+}
 
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-        <Label>Monat filtern</Label>
-        <Input type="month" value={filterMonat} onChange={(e) => setFilterMonat(e.target.value)} style={{ width: 160 }} />
-        {filterMonat && <Btn onClick={() => setFilterMonat("")}>Zurücksetzen</Btn>}
-      </div>
+// ---------- Buchungsliste ----------
+function Buchungsliste({ data, update, db, kontoById, adresseById, bankById, onEdit }) {
+  const [filterJahr, setFilterJahr] = useState("");
+  const [filterMonat, setFilterMonat] = useState("");
+  const [filterTag, setFilterTag] = useState("");
+  const [filterBankkonto, setFilterBankkonto] = useState("");
+  const [filterKonto, setFilterKonto] = useState("");
+
+  const jahre = Array.from(new Set(data.buchungen.map((b) => b.datum && b.datum.slice(0, 4)))).filter(Boolean).sort().reverse();
+  const monate = [
+    ["01", "Januar"], ["02", "Februar"], ["03", "März"], ["04", "April"], ["05", "Mai"], ["06", "Juni"],
+    ["07", "Juli"], ["08", "August"], ["09", "September"], ["10", "Oktober"], ["11", "November"], ["12", "Dezember"],
+  ];
+  const kontoOptionen = data.konten.filter((k) => istBlattkonto(k, data.konten)).map((k) => ({ value: k.id, label: kontoPfadName(k, kontoById) }));
+
+  const list = data.buchungen
+    .filter((b) => {
+      if (filterTag) { if (b.datum !== filterTag) return false; }
+      else {
+        if (filterJahr && (!b.datum || b.datum.slice(0, 4) !== filterJahr)) return false;
+        if (filterMonat && (!b.datum || b.datum.slice(5, 7) !== filterMonat)) return false;
+      }
+      if (filterBankkonto) {
+        const beteiligt = b.bankkontoId === filterBankkonto || b.vonBankkontoId === filterBankkonto || b.nachBankkontoId === filterBankkonto;
+        if (!beteiligt) return false;
+      }
+      if (filterKonto && !bookingPostings(b).some((p) => p.kontoId === filterKonto)) return false;
+      return true;
+    })
+    .sort((a, b) => b.datum.localeCompare(a.datum));
+
+  const kontoLabel = (b) => {
+    if (b.art === "Umbuchung") return `${bankById[b.vonBankkontoId]?.name || "?"} → ${bankById[b.nachBankkontoId]?.name || "?"}`;
+    if (b.art === "Investition") return `→ ${data.vermoegenswerte.find((a) => a.id === b.vermoegenswertId)?.name || "?"}`;
+    if (b.splits && b.splits.length > 1) return `Splitt (${b.splits.length} Positionen)`;
+    if (b.splits && b.splits.length === 1) return kontoById[b.splits[0].kontoId]?.name || "–";
+    return kontoById[b.kontoId]?.name || "–";
+  };
+  const betragVorzeichen = (b) => (b.art === "Einnahme" ? Number(b.betrag) : -Number(b.betrag));
+
+  const remove = (id) => {
+    update((d) => ({ ...d, buchungen: d.buchungen.filter((b) => b.id !== id) }));
+    db.buchungen.remove(id);
+  };
+
+  const zuruecksetzen = () => { setFilterJahr(""); setFilterMonat(""); setFilterTag(""); setFilterBankkonto(""); setFilterKonto(""); };
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: FONT_SERIF, fontWeight: 500, marginTop: 0 }}>Buchungsliste</h2>
+
+      <Card style={{ marginBottom: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, alignItems: "end" }}>
+          <div>
+            <Label>Jahr</Label>
+            <Select value={filterJahr} onChange={(e) => setFilterJahr(e.target.value)} disabled={!!filterTag}>
+              <option value="">Alle</option>
+              {jahre.map((j) => <option key={j} value={j}>{j}</option>)}
+            </Select>
+          </div>
+          <div>
+            <Label>Monat</Label>
+            <Select value={filterMonat} onChange={(e) => setFilterMonat(e.target.value)} disabled={!!filterTag}>
+              <option value="">Alle</option>
+              {monate.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
+            </Select>
+          </div>
+          <div>
+            <Label>Genauer Tag</Label>
+            <Input type="date" value={filterTag} onChange={(e) => setFilterTag(e.target.value)} />
+          </div>
+          <div>
+            <Label>Bankkonto</Label>
+            <Select value={filterBankkonto} onChange={(e) => setFilterBankkonto(e.target.value)}>
+              <option value="">Alle</option>
+              {data.bankkonten.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </Select>
+          </div>
+          <div>
+            <Label>Kategorie</Label>
+            <SearchSelect value={filterKonto} onChange={setFilterKonto} options={kontoOptionen} placeholder="Alle / suchen" />
+          </div>
+          <Btn onClick={zuruecksetzen}>Filter zurücksetzen</Btn>
+        </div>
+      </Card>
 
       <Card>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
-              <Th>Datum</Th><Th>Art</Th><Th>Konto / Ziel</Th><Th>Adresse</Th><Th>Bank</Th><Th>Beschreibung</Th><Th align="right">Betrag</Th><Th></Th>
+              <Th>Nr.</Th><Th>Datum</Th><Th>Art</Th><Th>Konto / Ziel</Th><Th>Adresse</Th><Th>Bank</Th><Th>Beschreibung</Th><Th align="right">Betrag</Th><Th></Th>
             </tr>
           </thead>
           <tbody>
             {list.map((b) => (
               <tr key={b.id}>
+                <Td mono style={{ fontSize: 11, color: C.inkSoft }}>{b.buchungsnummer || "–"}</Td>
                 <Td mono>{b.datum}</Td>
                 <Td>{b.art}</Td>
                 <Td>{kontoLabel(b)}</Td>
                 <Td>{adresseById[b.adresseId]?.name || "–"}</Td>
-                <Td>{bankLabel(b)}</Td>
+                <Td>{bankById[b.bankkontoId]?.name || "–"}</Td>
                 <Td>{b.beschreibung}</Td>
                 <Td align="right" mono>
-                  {b.art === "Umbuchung"
-                    ? fmtEUR(Number(b.betrag))
-                    : <Money value={b.art === "Investition" ? -Number(b.betrag) : betragVorzeichen(b)} />}
+                  {b.art === "Umbuchung" ? fmtEUR(Number(b.betrag)) : <Money value={b.art === "Investition" ? -Number(b.betrag) : betragVorzeichen(b)} />}
                 </Td>
                 <Td align="right">
-                  <span onClick={() => startEdit(b)} style={{ cursor: "pointer", fontSize: 12, color: C.amber, marginRight: 10 }}>bearbeiten</span>
+                  <span onClick={() => onEdit(b.id)} style={{ cursor: "pointer", fontSize: 12, color: C.amber, marginRight: 10 }}>bearbeiten</span>
                   <span onClick={() => remove(b.id)} style={{ cursor: "pointer", fontSize: 12, color: C.loss }}>löschen</span>
                 </Td>
               </tr>
             ))}
-            {list.length === 0 && <tr><Td colSpan={8}><i>Keine Buchungen vorhanden.</i></Td></tr>}
+            {list.length === 0 && <tr><Td colSpan={9}><i>Keine Buchungen für diese Filter.</i></Td></tr>}
           </tbody>
         </table>
       </Card>
@@ -1471,9 +1534,7 @@ function GuV({ data, kontoById, klassen }) {
   const relevante = data.buchungen.filter((b) => b.datum >= von && b.datum <= bis);
 
   const postingsOf = (b) => {
-    const list = b.splits && b.splits.length > 0
-      ? b.splits
-      : (b.art === "Einnahme" || b.art === "Ausgabe") ? [{ kontoId: b.kontoId, betrag: b.betrag, klasseId: b.klasseId }] : [];
+    const list = bookingPostings(b);
     return klasseFilter ? list.filter((p) => p.klasseId === klasseFilter) : list;
   };
 
