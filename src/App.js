@@ -48,6 +48,40 @@ const bookingPostings = (b) => {
   if (b.art === "Einnahme" || b.art === "Ausgabe") return [{ kontoId: b.kontoId, betrag: b.betrag, klasseId: b.klasseId }];
   return [];
 };
+const MONATE = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"];
+const MONATSNAME = { "01": "Jan", "02": "Feb", "03": "Mär", "04": "Apr", "05": "Mai", "06": "Jun", "07": "Jul", "08": "Aug", "09": "Sep", "10": "Okt", "11": "Nov", "12": "Dez" };
+
+const istWertKonto = (data, kontoId, monatStr) => {
+  let summe = 0;
+  for (const b of data.buchungen) {
+    if (!b.datum || monthKey(b.datum) !== monatStr) continue;
+    for (const p of bookingPostings(b)) {
+      if (p.kontoId === kontoId) summe += Number(p.betrag);
+    }
+  }
+  return summe;
+};
+
+// Ist (abgeschlossene Monate) + Plan (Restmonate aus Budgetplaner) für ein Jahr und einen Konto-Typ
+const berechneHochrechnung = (data, jahr, typ) => {
+  const heute = todayISO();
+  const aktuellesJahr = heute.slice(0, 4);
+  const aktuellerMonat = heute.slice(5, 7);
+  const istGrenzeMonat = jahr === aktuellesJahr ? aktuellerMonat : jahr < aktuellesJahr ? "12" : "00";
+  const blattkonten = data.konten.filter((k) => istBlattkonto(k, data.konten) && k.typ === typ);
+  let ist = 0, plan = 0;
+  for (const k of blattkonten) {
+    for (const m of MONATE) {
+      const monatStr = `${jahr}-${m}`;
+      if (m <= istGrenzeMonat) ist += istWertKonto(data, k.id, monatStr);
+      else {
+        const e = data.budgets.find((b) => b.kontoId === k.id && b.monat === monatStr);
+        plan += e ? Number(e.betrag) : 0;
+      }
+    }
+  }
+  return { ist, plan, summe: ist + plan, istGrenzeMonat };
+};
 const naechsteBuchungsnummer = (buchungen, datum) => {
   const jahr = (datum || todayISO()).slice(0, 4);
   const praefix = `B-${jahr}-`;
@@ -1536,75 +1570,82 @@ function Stammdaten({ data, update, db }) {
   );
 }
 
-// ---------- GuV ----------
 // ---------- Budgetplaner + Jahres-Hochrechnung ----------
 function Budgetplaner({ data, update, db, kontoById }) {
   const heute = todayISO();
   const aktuellesJahr = heute.slice(0, 4);
-  const aktuellerMonat = heute.slice(5, 7);
   const [jahr, setJahr] = useState(aktuellesJahr);
-
-  const monate = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"];
-  const monatsName = { "01": "Jan", "02": "Feb", "03": "Mär", "04": "Apr", "05": "Mai", "06": "Jun", "07": "Jul", "08": "Aug", "09": "Sep", "10": "Okt", "11": "Nov", "12": "Dez" };
+  const [entwurf, setEntwurf] = useState({}); // Schlüssel "kontoId|monat" -> String-Wert
+  const [gespeichertHinweis, setGespeichertHinweis] = useState(false);
 
   const blattkonten = data.konten
     .filter((k) => istBlattkonto(k, data.konten))
     .sort((a, b) => a.typ.localeCompare(b.typ) || (Number(a.sortIndex) || 0) - (Number(b.sortIndex) || 0) || a.name.localeCompare(b.name));
 
-  const budgetEintrag = (kontoId, monat) => data.budgets.find((b) => b.kontoId === kontoId && b.monat === `${jahr}-${monat}`);
+  // Entwurf neu aus den gespeicherten Planwerten aufbauen, sobald die Planungsperiode (Jahr) wechselt
+  useEffect(() => {
+    const neu = {};
+    data.budgets
+      .filter((b) => b.monat.startsWith(`${jahr}-`))
+      .forEach((b) => { neu[`${b.kontoId}|${b.monat.slice(5, 7)}`] = String(b.betrag); });
+    setEntwurf(neu);
+    setGespeichertHinweis(false);
+    // eslint-disable-next-line
+  }, [jahr, data.budgets.length]);
 
-  const setBudget = (kontoId, monat, wert) => {
-    const monatStr = `${jahr}-${monat}`;
-    const bestehend = budgetEintrag(kontoId, monat);
-    if (wert === "" || wert === null || wert === undefined) {
-      if (bestehend) {
-        update((d) => ({ ...d, budgets: d.budgets.filter((b) => b.id !== bestehend.id) }));
-        db.budgets.remove(bestehend.id);
-      }
-      return;
-    }
-    if (bestehend) {
-      const rec = { ...bestehend, betrag: Number(wert) };
-      update((d) => ({ ...d, budgets: d.budgets.map((b) => (b.id === bestehend.id ? rec : b)) }));
-      db.budgets.update(rec);
-    } else {
-      const rec = { id: uid(), kontoId, monat: monatStr, betrag: Number(wert) };
-      update((d) => ({ ...d, budgets: [...d.budgets, rec] }));
-      db.budgets.add(rec);
-    }
+  const zelle = (kontoId, monat) => entwurf[`${kontoId}|${monat}`] ?? "";
+  const setZelle = (kontoId, monat, wert) => {
+    setEntwurf((e) => ({ ...e, [`${kontoId}|${monat}`]: wert }));
+    setGespeichertHinweis(false);
   };
 
-  const istWert = (kontoId, monat) => {
-    const monatStr = `${jahr}-${monat}`;
-    let summe = 0;
-    for (const b of data.buchungen) {
-      if (!b.datum || monthKey(b.datum) !== monatStr) continue;
-      for (const p of bookingPostings(b)) {
-        if (p.kontoId === kontoId) summe += Number(p.betrag);
+  const speichern = () => {
+    const vorhandene = data.budgets.filter((b) => b.monat.startsWith(`${jahr}-`));
+    const neueListe = [...data.budgets];
+    for (const k of blattkonten) {
+      for (const m of MONATE) {
+        const monatStr = `${jahr}-${m}`;
+        const wertStr = entwurf[`${k.id}|${m}`];
+        const bestehend = vorhandene.find((b) => b.kontoId === k.id && b.monat === monatStr);
+        const istLeer = wertStr === undefined || wertStr === "";
+
+        if (istLeer) {
+          if (bestehend) {
+            db.budgets.remove(bestehend.id);
+            const idx = neueListe.findIndex((b) => b.id === bestehend.id);
+            if (idx >= 0) neueListe.splice(idx, 1);
+          }
+          continue;
+        }
+        const wert = Number(wertStr);
+        if (bestehend) {
+          if (Number(bestehend.betrag) !== wert) {
+            const rec = { ...bestehend, betrag: wert };
+            db.budgets.update(rec);
+            const idx = neueListe.findIndex((b) => b.id === bestehend.id);
+            if (idx >= 0) neueListe[idx] = rec;
+          }
+        } else {
+          const rec = { id: uid(), kontoId: k.id, monat: monatStr, betrag: wert };
+          db.budgets.add(rec);
+          neueListe.push(rec);
+        }
       }
     }
-    return summe;
+    update((d) => ({ ...d, budgets: neueListe }));
+    setGespeichertHinweis(true);
   };
 
-  // Ist-Grenze: bis zu welchem Monat gilt "Ist" statt "Plan"
-  const istGrenzeMonat = jahr === aktuellesJahr ? aktuellerMonat : jahr < aktuellesJahr ? "12" : "00";
+  const istGrenzeMonat = jahr === aktuellesJahr ? heute.slice(5, 7) : jahr < aktuellesJahr ? "12" : "00";
+  const vorjahr = String(Number(jahr) - 1);
 
-  const hochrechnung = (typ) => {
-    let ist = 0, plan = 0;
-    for (const k of blattkonten.filter((kk) => kk.typ === typ)) {
-      for (const m of monate) {
-        if (m <= istGrenzeMonat) ist += istWert(k.id, m);
-        else { const e = budgetEintrag(k.id, m); plan += e ? Number(e.betrag) : 0; }
-      }
-    }
-    return { ist, plan, summe: ist + plan };
-  };
-  const hochErtrag = hochrechnung("Ertrag");
-  const hochAufwand = hochrechnung("Aufwand");
+  const hochErtrag = berechneHochrechnung({ ...data, budgets: [...data.budgets.filter((b) => !b.monat.startsWith(`${jahr}-`)), ...Object.entries(entwurf).filter(([, v]) => v !== "").map(([key, v]) => { const [kontoId, m] = key.split("|"); return { kontoId, monat: `${jahr}-${m}`, betrag: Number(v) }; })] }, jahr, "Ertrag");
+  const hochAufwand = berechneHochrechnung({ ...data, budgets: [...data.budgets.filter((b) => !b.monat.startsWith(`${jahr}-`)), ...Object.entries(entwurf).filter(([, v]) => v !== "").map(([key, v]) => { const [kontoId, m] = key.split("|"); return { kontoId, monat: `${jahr}-${m}`, betrag: Number(v) }; })] }, jahr, "Aufwand");
   const hochErgebnis = hochErtrag.summe - hochAufwand.summe;
 
   const jahre = Array.from(new Set([
     aktuellesJahr,
+    String(Number(aktuellesJahr) + 1),
     ...data.buchungen.map((b) => b.datum && b.datum.slice(0, 4)).filter(Boolean),
     ...data.budgets.map((b) => b.monat.slice(0, 4)),
   ])).sort();
@@ -1612,18 +1653,22 @@ function Budgetplaner({ data, update, db, kontoById }) {
   return (
     <div>
       <h2 style={{ fontFamily: FONT_SERIF, fontWeight: 500, marginTop: 0 }}>Budgetplaner</h2>
-      <div style={{ marginBottom: 14 }}>
-        <Label>Jahr</Label>
-        <Select value={jahr} onChange={(e) => setJahr(e.target.value)} style={{ width: 120 }}>
-          {jahre.map((j) => <option key={j} value={j}>{j}</option>)}
-        </Select>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 14, flexWrap: "wrap" }}>
+        <div>
+          <Label>Planungsperiode (Jahr)</Label>
+          <Select value={jahr} onChange={(e) => setJahr(e.target.value)} style={{ width: 120 }}>
+            {jahre.map((j) => <option key={j} value={j}>{j}</option>)}
+          </Select>
+        </div>
+        <Btn primary onClick={speichern}>Planwerte speichern</Btn>
+        {gespeichertHinweis && <span style={{ fontSize: 12, color: C.gain }}>Gespeichert ✓</span>}
       </div>
 
       <Card style={{ marginBottom: 16, background: C.gainSoft, borderColor: C.gain }}>
         <Label>Jahres-Hochrechnung {jahr}</Label>
         <div style={{ fontSize: 12, color: C.inkSoft, margin: "6px 0 12px" }}>
           {jahr === aktuellesJahr
-            ? `Ist-Werte bis einschließlich ${monatsName[aktuellerMonat]}, für die restlichen Monate zählen deine Planwerte aus der Tabelle unten (Monate ohne Planwert zählen als 0).`
+            ? `Ist-Werte bis einschließlich ${MONATSNAME[istGrenzeMonat]}, für die restlichen Monate zählen deine (noch ungespeicherten) Planwerte unten live mit.`
             : jahr < aktuellesJahr
             ? "Abgeschlossenes Jahr – zeigt ausschließlich Ist-Werte aus deinen Buchungen."
             : "Zukünftiges Jahr – zeigt ausschließlich deine Planwerte."}
@@ -1647,15 +1692,15 @@ function Budgetplaner({ data, update, db, kontoById }) {
       </Card>
 
       <Card style={{ overflowX: "auto" }}>
-        <Label>Planwerte je Konto und Monat (€)</Label>
+        <Label>Planwerte je Konto und Monat (€) – Referenzjahr {vorjahr}</Label>
         <div style={{ fontSize: 12, color: C.inkSoft, margin: "4px 0 10px" }}>
-          Bereits vergangene Monate zeigen zusätzlich klein den tatsächlichen Ist-Wert zum Abgleich. Werte werden beim Verlassen des Feldes automatisch gespeichert.
+          Jede Zelle zeigt klein den Ist-Wert aus {vorjahr} als Orientierung. Bereits vergangene Monate von {jahr} zeigen zusätzlich den eigenen Ist-Wert. Änderungen werden erst mit "Planwerte speichern" oben übernommen.
         </div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
               <Th>Konto</Th>
-              {monate.map((m) => <Th key={m} align="right">{monatsName[m]}</Th>)}
+              {MONATE.map((m) => <Th key={m} align="right">{MONATSNAME[m]}</Th>)}
               <Th align="right">Summe</Th>
             </tr>
           </thead>
@@ -1664,26 +1709,27 @@ function Budgetplaner({ data, update, db, kontoById }) {
               <React.Fragment key={typ}>
                 <tr><Td style={{ fontWeight: 700, background: C.paper }} colSpan={14}>{typ === "Ertrag" ? "Erträge" : "Aufwendungen"}</Td></tr>
                 {blattkonten.filter((k) => k.typ === typ).map((k) => {
-                  const summeJahr = monate.reduce((s, m) => { const e = budgetEintrag(k.id, m); return s + (e ? Number(e.betrag) : 0); }, 0);
+                  const summeJahr = MONATE.reduce((s, m) => s + (Number(zelle(k.id, m)) || 0), 0);
                   return (
                     <tr key={k.id}>
                       <Td>{kontoPfadName(k, kontoById)}</Td>
-                      {monate.map((m) => {
+                      {MONATE.map((m) => {
                         const vergangen = m <= istGrenzeMonat;
-                        const eintrag = budgetEintrag(k.id, m);
+                        const vorjahrIst = istWertKonto(data, k.id, `${vorjahr}-${m}`);
                         return (
                           <Td key={m} align="right">
                             <input
                               type="number"
                               step="0.01"
-                              defaultValue={eintrag ? eintrag.betrag : ""}
-                              onBlur={(e) => setBudget(k.id, m, e.target.value)}
+                              value={zelle(k.id, m)}
+                              onChange={(e) => setZelle(k.id, m, e.target.value)}
                               placeholder="–"
                               style={{ width: 62, textAlign: "right", border: `1px solid ${C.lineStrong}`, borderRadius: 3, padding: "3px 4px", fontFamily: FONT_MONO, fontSize: 12 }}
                             />
-                            {vergangen && (
-                              <div style={{ fontSize: 10, color: C.inkSoft, marginTop: 2 }}>Ist {fmtEUR(istWert(k.id, m))}</div>
-                            )}
+                            <div style={{ fontSize: 10, color: C.inkSoft, marginTop: 2 }}>
+                              {vergangen && <div>Ist {fmtEUR(istWertKonto(data, k.id, `${jahr}-${m}`))}</div>}
+                              <div>{vorjahr}: {fmtEUR(vorjahrIst)}</div>
+                            </div>
                           </Td>
                         );
                       })}
@@ -1704,6 +1750,7 @@ function GuV({ data, kontoById, klassen }) {
   const [von, setVon] = useState(todayISO().slice(0, 4) + "-01-01");
   const [bis, setBis] = useState(todayISO());
   const [klasseFilter, setKlasseFilter] = useState("");
+  const [hochrechnungsJahr, setHochrechnungsJahr] = useState(todayISO().slice(0, 4));
 
   const relevante = data.buchungen.filter((b) => b.datum >= von && b.datum <= bis);
 
@@ -1793,6 +1840,16 @@ function GuV({ data, kontoById, klassen }) {
   })();
   const linienFarben = [C.green, C.amber, C.loss, "#4A6FA5", "#8B6EA0"];
 
+  const hjErtrag = berechneHochrechnung(data, hochrechnungsJahr, "Ertrag");
+  const hjAufwand = berechneHochrechnung(data, hochrechnungsJahr, "Aufwand");
+  const hjErgebnis = hjErtrag.summe - hjAufwand.summe;
+  const hjJahre = Array.from(new Set([
+    todayISO().slice(0, 4),
+    String(Number(todayISO().slice(0, 4)) + 1),
+    ...data.buchungen.map((b) => b.datum && b.datum.slice(0, 4)).filter(Boolean),
+    ...data.budgets.map((b) => b.monat.slice(0, 4)),
+  ])).sort();
+
   const renderGruppe = (gruppenObj, vorGruppenObj, farbe) =>
     sortiereGruppen(gruppenObj).map(([gruppe, konten]) => (
       <React.Fragment key={gruppe}>
@@ -1855,6 +1912,34 @@ function GuV({ data, kontoById, klassen }) {
           <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 2 }}>Vorperiode: {fmtEUR(vorSumAufwendungen)}</div>
         </Card>
       </div>
+
+      <Card style={{ marginBottom: 16, background: C.gainSoft, borderColor: C.gain }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 8 }}>
+          <Label>Jahres-Hochrechnung</Label>
+          <Select value={hochrechnungsJahr} onChange={(e) => setHochrechnungsJahr(e.target.value)} style={{ width: 110 }}>
+            {hjJahre.map((j) => <option key={j} value={j}>{j}</option>)}
+          </Select>
+        </div>
+        <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 10 }}>
+          Ist-Werte für abgeschlossene Monate von {hochrechnungsJahr}, für die restlichen Monate deine Planwerte aus dem Budgetplaner.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
+          <div>
+            <Label>Erträge (Hochrechnung)</Label>
+            <div style={{ fontSize: 19, fontFamily: FONT_MONO, color: C.gain }}>{fmtEUR(hjErtrag.summe)}</div>
+            <div style={{ fontSize: 11, color: C.inkSoft }}>Ist {fmtEUR(hjErtrag.ist)} · Plan {fmtEUR(hjErtrag.plan)}</div>
+          </div>
+          <div>
+            <Label>Aufwendungen (Hochrechnung)</Label>
+            <div style={{ fontSize: 19, fontFamily: FONT_MONO, color: C.loss }}>{fmtEUR(hjAufwand.summe)}</div>
+            <div style={{ fontSize: 11, color: C.inkSoft }}>Ist {fmtEUR(hjAufwand.ist)} · Plan {fmtEUR(hjAufwand.plan)}</div>
+          </div>
+          <div>
+            <Label>Ergebnis (Hochrechnung)</Label>
+            <div style={{ fontSize: 19, fontFamily: FONT_MONO }}><Money value={hjErgebnis} /></div>
+          </div>
+        </div>
+      </Card>
 
       <Card style={{ marginBottom: 16 }}>
         <Label>Kostenstruktur je Monat (Fix / Variabel)</Label>
