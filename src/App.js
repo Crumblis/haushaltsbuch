@@ -61,8 +61,8 @@ const seed = {
 const STORAGE_KEY = "haushaltsbuch-v1";
 
 const supabase = createClient(
-  "DEINE_PROJECT_URL_HIER",   // z. B. https://abcdefgh.supabase.co
-  "DEIN_PUBLISHABLE_KEY_HIER"
+  "https://qatpgbwzjegzwnixfsai.supabase.co",   // z. B. https://abcdefgh.supabase.co
+  "sb_publishable_vRzu_oYDFZtp54g7NBLBTQ_GrC8_p0r"
 );
 
 const numOrNull = (v) => (v === "" || v === null || v === undefined ? null : Number(v));
