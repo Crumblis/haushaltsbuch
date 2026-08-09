@@ -142,7 +142,7 @@ async function loadData() {
     });
 
     return {
-      konten: (konten.data || []).map((r) => ({ id: r.id, name: r.name, typ: r.typ, gruppe: r.gruppe, kostenart: r.kostenart, parentId: r.parent_id })),
+      konten: (konten.data || []).map((r) => ({ id: r.id, name: r.name, typ: r.typ, gruppe: r.gruppe, kostenart: r.kostenart, parentId: r.parent_id, sortIndex: r.sort_index })),
       klassen: klassen.data || [],
       adressen: (adressen.data || []).map((r) => ({ id: r.id, name: r.name, iban: r.iban, notiz: r.notiz, strasse: r.strasse, plz: r.plz, stadt: r.stadt, land: r.land, kategorieId: r.kategorie_id })),
       adresskategorien: adresskategorien.data || [],
@@ -165,7 +165,7 @@ async function loadData() {
 }
 
 // ---------- Einzelzeilen-Mapper JS -> DB-Spaltennamen ----------
-const mapKonto = (k) => ({ id: k.id, name: k.name, typ: k.typ, gruppe: k.gruppe || null, kostenart: k.kostenart || null, parent_id: k.parentId || null });
+const mapKonto = (k) => ({ id: k.id, name: k.name, typ: k.typ, gruppe: k.gruppe || null, kostenart: k.kostenart || null, parent_id: k.parentId || null, sort_index: Number(k.sortIndex) || 0 });
 const mapKlasse = (k) => ({ id: k.id, name: k.name, typ: k.typ });
 const mapAdresse = (a) => ({ id: a.id, name: a.name, iban: a.iban || null, notiz: a.notiz || null, strasse: a.strasse || null, plz: a.plz || null, stadt: a.stadt || null, land: a.land || null, kategorie_id: a.kategorieId || null });
 const mapAdresskategorie = (k) => ({ id: k.id, name: k.name });
@@ -1343,7 +1343,7 @@ function Adressen({ data, update, db }) {
 // ---------- Stammdaten: Konten, Klassen, Bankkonten, Bilanzpositionen ----------
 function Stammdaten({ data, update, db }) {
   const kontoById = Object.fromEntries(data.konten.map((k) => [k.id, k]));
-  const [kForm, setKForm] = useState({ id: null, name: "", typ: "Aufwand", gruppe: "", kostenart: "Variabel", parentId: "" });
+  const [kForm, setKForm] = useState({ id: null, name: "", typ: "Aufwand", gruppe: "", kostenart: "Variabel", parentId: "", sortIndex: 0 });
   const [klForm, setKlForm] = useState({ id: null, name: "", typ: "Kostenstelle" });
   const [bForm, setBForm] = useState({ id: null, name: "", startsaldo: "", kreditinstitutId: "", kontotyp: "Girokonto", kontonummer: "" });
   const [sichtbareKontonummern, setSichtbareKontonummern] = useState({});
@@ -1374,7 +1374,7 @@ function Stammdaten({ data, update, db }) {
         <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 8 }}>
           Konten lassen sich verschachteln (z. B. Lebenshaltung → Lebensmittel → Nahrung). Bebuchbar in Buchungen ist immer nur die jeweils unterste Ebene.
         </div>
-        <form onSubmit={saveList("konten", kForm, setKForm, { id: null, name: "", typ: "Aufwand", gruppe: "", kostenart: "Variabel", parentId: "" })} style={{ margin: "10px 0" }}>
+        <form onSubmit={saveList("konten", kForm, setKForm, { id: null, name: "", typ: "Aufwand", gruppe: "", kostenart: "Variabel", parentId: "", sortIndex: 0 })} style={{ margin: "10px 0" }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 8 }}>
             <Input placeholder="Name" value={kForm.name} onChange={(e) => setKForm({ ...kForm, name: e.target.value })} required />
             <Select value={kForm.typ} onChange={(e) => setKForm({ ...kForm, typ: e.target.value })}>
@@ -1392,19 +1392,24 @@ function Stammdaten({ data, update, db }) {
                 <option value="Fix">Fixkosten</option><option value="Variabel">Variable Kosten</option>
               </Select>
             )}
+            <div>
+              <Input type="number" placeholder="Sortierindex" value={kForm.sortIndex ?? 0} onChange={(e) => setKForm({ ...kForm, sortIndex: e.target.value })} title="Bestimmt Reihenfolge in Gruppe und Auswertungen" />
+            </div>
             <Btn primary type="submit">{kForm.id ? "Speichern" : "Hinzufügen"}</Btn>
           </div>
+          <div style={{ fontSize: 12, color: C.inkSoft }}>Sortierindex bestimmt die Reihenfolge innerhalb der Gruppe (und indirekt die Reihenfolge der Gruppen selbst) in GuV & Co. – kleinere Zahl zuerst.</div>
         </form>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><Th>Name</Th><Th>Typ</Th><Th>Gruppe</Th><Th>Kostenart</Th><Th>Bebuchbar</Th><Th></Th></tr></thead>
+          <thead><tr><Th>Name</Th><Th>Typ</Th><Th>Gruppe</Th><Th>Kostenart</Th><Th align="right">Sortierindex</Th><Th>Bebuchbar</Th><Th></Th></tr></thead>
           <tbody>
-            {[...data.konten].sort((a, b) => a.typ.localeCompare(b.typ) || kontoPfadName(a, kontoById).localeCompare(kontoPfadName(b, kontoById))).map((k) => (
+            {[...data.konten].sort((a, b) => a.typ.localeCompare(b.typ) || (Number(a.sortIndex) || 0) - (Number(b.sortIndex) || 0) || kontoPfadName(a, kontoById).localeCompare(kontoPfadName(b, kontoById))).map((k) => (
               <tr key={k.id}>
                 <Td style={{ paddingLeft: 10 + kontoTiefe(k, kontoById) * 18 }}>{kontoTiefe(k, kontoById) > 0 ? "↳ " : ""}{k.name}</Td>
                 <Td>{k.typ}</Td><Td>{k.gruppe}</Td><Td>{k.typ === "Aufwand" ? (k.kostenart || "Variabel") : "–"}</Td>
+                <Td align="right" mono>{Number(k.sortIndex) || 0}</Td>
                 <Td>{istBlattkonto(k, data.konten) ? "Ja" : "– Gruppe –"}</Td>
                 <Td align="right">
-                  <span onClick={() => setKForm({ ...k, parentId: k.parentId || "" })} style={{ cursor: "pointer", fontSize: 12, color: C.amber, marginRight: 10 }}>bearbeiten</span>
+                  <span onClick={() => setKForm({ ...k, parentId: k.parentId || "", sortIndex: k.sortIndex ?? 0 })} style={{ cursor: "pointer", fontSize: 12, color: C.amber, marginRight: 10 }}>bearbeiten</span>
                   <span onClick={() => removeFrom("konten", k.id)} style={{ cursor: "pointer", fontSize: 12, color: C.loss }}>löschen</span>
                 </Td>
               </tr>
@@ -1537,23 +1542,45 @@ function GuV({ data, kontoById, klassen }) {
     return klasseFilter ? list.filter((p) => p.klasseId === klasseFilter) : list;
   };
 
-  const gruppiere = (typ) => {
+  const gruppiere = (typ, buchungen) => {
     const map = {};
-    for (const b of relevante) {
+    const gruppenSort = {};
+    for (const b of buchungen) {
       for (const p of postingsOf(b)) {
         const k = kontoById[p.kontoId];
         if (!k || k.typ !== typ) continue;
         const gruppe = k.gruppe || "Ohne Gruppe";
+        const sIdx = Number(k.sortIndex) || 0;
         map[gruppe] = map[gruppe] || {};
         map[gruppe][k.name] = (map[gruppe][k.name] || 0) + Number(p.betrag);
+        gruppenSort[gruppe] = gruppenSort[gruppe] === undefined ? sIdx : Math.min(gruppenSort[gruppe], sIdx);
       }
     }
-    return map;
+    return { map, gruppenSort };
   };
-  const ertraege = gruppiere("Ertrag");
-  const aufwendungen = gruppiere("Aufwand");
-  const sumErtraege = Object.values(ertraege).reduce((s, g) => s + Object.values(g).reduce((a, b) => a + b, 0), 0);
-  const sumAufwendungen = Object.values(aufwendungen).reduce((s, g) => s + Object.values(g).reduce((a, b) => a + b, 0), 0);
+  const kontoSortIndex = {};
+  data.konten.forEach((k) => { kontoSortIndex[k.name] = Number(k.sortIndex) || 0; });
+  const sortiereGruppen = (obj) =>
+    Object.entries(obj.map).sort(([ga], [gb]) => (obj.gruppenSort[ga] ?? 0) - (obj.gruppenSort[gb] ?? 0) || ga.localeCompare(gb));
+  const sortierePositionen = (konten) =>
+    Object.entries(konten).sort(([na], [nb]) => (kontoSortIndex[na] ?? 0) - (kontoSortIndex[nb] ?? 0) || na.localeCompare(nb));
+  const ertraege = gruppiere("Ertrag", relevante);
+  const aufwendungen = gruppiere("Aufwand", relevante);
+  const sumErtraege = Object.values(ertraege.map).reduce((s, g) => s + Object.values(g).reduce((a, b) => a + b, 0), 0);
+  const sumAufwendungen = Object.values(aufwendungen.map).reduce((s, g) => s + Object.values(g).reduce((a, b) => a + b, 0), 0);
+
+  // Vorperiode: exakt gleich lange Zeitspanne direkt davor
+  const tageDiff = Math.max(1, Math.round((new Date(bis) - new Date(von)) / 86400000) + 1);
+  const vorVon = new Date(von); vorVon.setDate(vorVon.getDate() - tageDiff);
+  const vorBis = new Date(von); vorBis.setDate(vorBis.getDate() - 1);
+  const vorVonStr = vorVon.toISOString().slice(0, 10);
+  const vorBisStr = vorBis.toISOString().slice(0, 10);
+  const vorRelevante = data.buchungen.filter((b) => b.datum >= vorVonStr && b.datum <= vorBisStr);
+  const vorErtraege = gruppiere("Ertrag", vorRelevante);
+  const vorAufwendungen = gruppiere("Aufwand", vorRelevante);
+  const vorSumErtraege = Object.values(vorErtraege.map).reduce((s, g) => s + Object.values(g).reduce((a, b) => a + b, 0), 0);
+  const vorSumAufwendungen = Object.values(vorAufwendungen.map).reduce((s, g) => s + Object.values(g).reduce((a, b) => a + b, 0), 0);
+  const vorErgebnis = vorSumErtraege - vorSumAufwendungen;
   const ergebnis = sumErtraege - sumAufwendungen;
   const ergebnisquote = sumErtraege > 0 ? (ergebnis / sumErtraege) * 100 : 0;
 
@@ -1596,14 +1623,15 @@ function GuV({ data, kontoById, klassen }) {
   })();
   const linienFarben = [C.green, C.amber, C.loss, "#4A6FA5", "#8B6EA0"];
 
-  const renderGruppe = (gruppen, farbe) =>
-    Object.entries(gruppen).map(([gruppe, konten]) => (
+  const renderGruppe = (gruppenObj, vorGruppenObj, farbe) =>
+    sortiereGruppen(gruppenObj).map(([gruppe, konten]) => (
       <React.Fragment key={gruppe}>
-        <tr><Td style={{ fontWeight: 600, background: C.paper }} colSpan={2}>{gruppe}</Td></tr>
-        {Object.entries(konten).map(([name, wert]) => (
+        <tr><Td style={{ fontWeight: 600, background: C.paper }} colSpan={3}>{gruppe}</Td></tr>
+        {sortierePositionen(konten).map(([name, wert]) => (
           <tr key={name}>
             <Td style={{ paddingLeft: 24 }}>{name}</Td>
             <Td align="right" mono style={{ color: farbe }}>{fmtEUR(wert)}</Td>
+            <Td align="right" mono style={{ color: C.inkSoft, fontSize: 12 }}>{fmtEUR((vorGruppenObj.map[gruppe] || {})[name] || 0)}</Td>
           </tr>
         ))}
       </React.Fragment>
@@ -1613,6 +1641,21 @@ function GuV({ data, kontoById, klassen }) {
     <div>
       <h2 style={{ fontFamily: FONT_SERIF, fontWeight: 500, marginTop: 0 }}>Gewinn- und Verlustrechnung</h2>
       <div style={{ display: "flex", gap: 12, marginBottom: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <div>
+          <Label>Monat (Schnellauswahl)</Label>
+          <Input
+            type="month"
+            value={von.slice(0, 4) === bis.slice(0, 4) && von.slice(5, 7) === bis.slice(5, 7) ? von.slice(0, 7) : ""}
+            onChange={(e) => {
+              if (!e.target.value) return;
+              const [j, m] = e.target.value.split("-");
+              const letzterTag = new Date(Number(j), Number(m), 0).getDate();
+              setVon(`${j}-${m}-01`);
+              setBis(`${j}-${m}-${String(letzterTag).padStart(2, "0")}`);
+            }}
+            style={{ width: 150 }}
+          />
+        </div>
         <div><Label>Von</Label><Input type="date" value={von} onChange={(e) => setVon(e.target.value)} /></div>
         <div><Label>Bis</Label><Input type="date" value={bis} onChange={(e) => setBis(e.target.value)} /></div>
         <div>
@@ -1624,11 +1667,23 @@ function GuV({ data, kontoById, klassen }) {
         </div>
       </div>
 
+      <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 14 }}>
+        Vorperiode zum Vergleich: {vorVonStr} bis {vorBisStr} (gleich lange Zeitspanne direkt davor)
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 16 }}>
-        <Card><Label>Ergebnis</Label><div style={{ fontSize: 20, fontFamily: FONT_MONO }}><Money value={ergebnis} /></div></Card>
+        <Card>
+          <Label>Ergebnis</Label>
+          <div style={{ fontSize: 20, fontFamily: FONT_MONO }}><Money value={ergebnis} /></div>
+          <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 2 }}>Vorperiode: {fmtEUR(vorErgebnis)}</div>
+        </Card>
         <Card><Label>Ergebnisquote</Label><div style={{ fontSize: 20, fontFamily: FONT_MONO }}>{ergebnisquote.toFixed(1)} %</div></Card>
         <Card><Label>Fixkostenquote</Label><div style={{ fontSize: 20, fontFamily: FONT_MONO }}>{fixquote.toFixed(1)} %</div></Card>
-        <Card><Label>Aufwand gesamt</Label><div style={{ fontSize: 20, fontFamily: FONT_MONO, color: C.loss }}>{fmtEUR(sumAufwendungen)}</div></Card>
+        <Card>
+          <Label>Aufwand gesamt</Label>
+          <div style={{ fontSize: 20, fontFamily: FONT_MONO, color: C.loss }}>{fmtEUR(sumAufwendungen)}</div>
+          <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 2 }}>Vorperiode: {fmtEUR(vorSumAufwendungen)}</div>
+        </Card>
       </div>
 
       <Card style={{ marginBottom: 16 }}>
@@ -1668,19 +1723,20 @@ function GuV({ data, kontoById, klassen }) {
 
       <Card>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><Th>Position</Th><Th align="right">Betrag</Th></tr></thead>
+          <thead><tr><Th>Position</Th><Th align="right">Betrag</Th><Th align="right">Vorperiode</Th></tr></thead>
           <tbody>
-            <tr><Td style={{ fontWeight: 700, fontFamily: FONT_SERIF }} colSpan={2}>Erträge</Td></tr>
-            {renderGruppe(ertraege, C.gain)}
-            <tr><Td style={{ fontWeight: 600 }}>Summe Erträge</Td><Td align="right" mono style={{ fontWeight: 600, color: C.gain }}>{fmtEUR(sumErtraege)}</Td></tr>
-            <tr><Td colSpan={2} style={{ borderBottom: `2px solid ${C.line}`, padding: 4 }}></Td></tr>
-            <tr><Td style={{ fontWeight: 700, fontFamily: FONT_SERIF }} colSpan={2}>Aufwendungen</Td></tr>
-            {renderGruppe(aufwendungen, C.loss)}
-            <tr><Td style={{ fontWeight: 600 }}>Summe Aufwendungen</Td><Td align="right" mono style={{ fontWeight: 600, color: C.loss }}>{fmtEUR(sumAufwendungen)}</Td></tr>
-            <tr><Td colSpan={2} style={{ borderBottom: `2px solid ${C.lineStrong}`, padding: 4 }}></Td></tr>
+            <tr><Td style={{ fontWeight: 700, fontFamily: FONT_SERIF }} colSpan={3}>Erträge</Td></tr>
+            {renderGruppe(ertraege, vorErtraege, C.gain)}
+            <tr><Td style={{ fontWeight: 600 }}>Summe Erträge</Td><Td align="right" mono style={{ fontWeight: 600, color: C.gain }}>{fmtEUR(sumErtraege)}</Td><Td align="right" mono style={{ color: C.inkSoft, fontSize: 12 }}>{fmtEUR(vorSumErtraege)}</Td></tr>
+            <tr><Td colSpan={3} style={{ borderBottom: `2px solid ${C.line}`, padding: 4 }}></Td></tr>
+            <tr><Td style={{ fontWeight: 700, fontFamily: FONT_SERIF }} colSpan={3}>Aufwendungen</Td></tr>
+            {renderGruppe(aufwendungen, vorAufwendungen, C.loss)}
+            <tr><Td style={{ fontWeight: 600 }}>Summe Aufwendungen</Td><Td align="right" mono style={{ fontWeight: 600, color: C.loss }}>{fmtEUR(sumAufwendungen)}</Td><Td align="right" mono style={{ color: C.inkSoft, fontSize: 12 }}>{fmtEUR(vorSumAufwendungen)}</Td></tr>
+            <tr><Td colSpan={3} style={{ borderBottom: `2px solid ${C.lineStrong}`, padding: 4 }}></Td></tr>
             <tr>
               <Td style={{ fontWeight: 700, fontFamily: FONT_SERIF, fontSize: 15 }}>Jahresüberschuss / -fehlbetrag</Td>
               <Td align="right" mono style={{ fontWeight: 700, fontSize: 15 }}><Money value={ergebnis} /></Td>
+              <Td align="right" mono style={{ color: C.inkSoft, fontSize: 12 }}>{fmtEUR(vorErgebnis)}</Td>
             </tr>
           </tbody>
         </table>
