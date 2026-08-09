@@ -61,8 +61,8 @@ const seed = {
 const STORAGE_KEY = "haushaltsbuch-v1";
 
 const supabase = createClient(
-  "https://qatpgbwzjegzwnixfsai.supabase.co",   // z. B. https://abcdefgh.supabase.co
-  "sb_publishable_vRzu_oYDFZtp54g7NBLBTQ_GrC8_p0r"
+  "DEINE_PROJECT_URL_HIER",   // z. B. https://abcdefgh.supabase.co
+  "DEIN_PUBLISHABLE_KEY_HIER"
 );
 
 const numOrNull = (v) => (v === "" || v === null || v === undefined ? null : Number(v));
@@ -87,7 +87,14 @@ async function loadData() {
       supabase.from("buchungssplits").select("*"),
     ]);
     const alleLeer = [konten, klassen, adressen, bankkonten, buchungen].every((r) => !r.data || r.data.length === 0);
-    if (alleLeer) return seed;
+    if (alleLeer) {
+      // Erststart: leere Datenbank mit den Start-Kategorien befüllen, damit spätere Buchungen
+      // gültige Fremdschlüssel-Verweise haben (statt nur lokal im Speicher zu existieren).
+      seed.konten.forEach((k) => dbInsert("konten", mapKonto(k)));
+      seed.klassen.forEach((k) => dbInsert("klassen", mapKlasse(k)));
+      seed.bankkonten.forEach((b) => dbInsert("bankkonten", mapBankkonto(b)));
+      return seed;
+    }
 
     const splitsProBuchung = {};
     (buchungssplits.data || []).forEach((s) => {
@@ -605,7 +612,12 @@ function Buchungen({ data, update, db, kontoById, adresseById, klasseById, bankB
   const [splitRows, setSplitRows] = useState([{ id: uid(), kontoId: "", betrag: "", klasseId: "" }]);
 
   const kontenFuerArt = data.konten.filter((k) => k.typ === (form.art === "Einnahme" ? "Ertrag" : "Aufwand"));
-  const splitSumme = splitRows.reduce((s, r) => s + (Number(r.betrag) || 0), 0);
+  const splitNetto = splitRows.reduce((s, r) => {
+    const k = kontoById[r.kontoId];
+    if (!k) return s;
+    const betrag = Number(r.betrag) || 0;
+    return s + (k.typ === "Ertrag" ? betrag : -betrag);
+  }, 0);
 
   const resetForm = () => {
     setForm(emptyBuchung(data));
@@ -662,10 +674,15 @@ function Buchungen({ data, update, db, kontoById, adresseById, klasseById, bankB
     // Einnahme / Ausgabe (ggf. mit Splitt)
     if (!form.bankkontoId) return;
     if (splitMode) {
-      const gueltig = splitRows.filter((r) => r.kontoId && Number(r.betrag) > 0);
+      const gueltig = splitRows.filter((r) => r.kontoId && Number(r.betrag) !== 0 && r.betrag !== "");
       if (gueltig.length === 0) return;
+      const netto = gueltig.reduce((s, r) => {
+        const k = kontoById[r.kontoId];
+        const betrag = Number(r.betrag);
+        return s + (k && k.typ === "Ertrag" ? betrag : -betrag);
+      }, 0);
       const rec = {
-        id: editId || form.id || uid(), datum: form.datum, art: form.art, betrag: gueltig.reduce((s, r) => s + Number(r.betrag), 0),
+        id: editId || form.id || uid(), datum: form.datum, art: netto >= 0 ? "Einnahme" : "Ausgabe", betrag: Math.abs(netto),
         bankkontoId: form.bankkontoId, adresseId: form.adresseId, beschreibung: form.beschreibung,
         kontoId: "", klasseId: "", splits: gueltig.map((r) => ({ id: r.id || uid(), kontoId: r.kontoId, betrag: Number(r.betrag), klasseId: r.klasseId })),
       };
@@ -742,10 +759,18 @@ function Buchungen({ data, update, db, kontoById, adresseById, klasseById, bankB
                 <option value="Investition">Investition (Kauf Vermögenswert)</option>
               </Select>
             </div>
-            {form.art !== "Umbuchung" && (
+            {form.art !== "Umbuchung" && !splitMode && (
               <div>
-                <Label>Betrag (€) {splitMode ? `– Summe: ${fmtEUR(splitSumme)}` : ""}</Label>
-                <Input type="number" step="0.01" min="0" disabled={splitMode} value={splitMode ? splitSumme.toFixed(2) : form.betrag} onChange={(e) => setForm({ ...form, betrag: e.target.value })} required={!splitMode} />
+                <Label>Betrag (€)</Label>
+                <Input type="number" step="0.01" min="0" value={form.betrag} onChange={(e) => setForm({ ...form, betrag: e.target.value })} required />
+              </div>
+            )}
+            {form.art !== "Umbuchung" && splitMode && (
+              <div>
+                <Label>Netto-Betrag (Bankkonto)</Label>
+                <div style={{ padding: "7px 9px", fontFamily: FONT_MONO, fontSize: 15 }}>
+                  <Money value={splitNetto} />
+                </div>
               </div>
             )}
             {form.art === "Umbuchung" && (
@@ -801,14 +826,19 @@ function Buchungen({ data, update, db, kontoById, adresseById, klasseById, bankB
 
               {splitMode && (
                 <div style={{ marginBottom: 10, border: `1px solid ${C.line}`, borderRadius: 6, padding: 10, background: C.paper }}>
-                  <Label>Splitt-Positionen</Label>
+                  <Label>Splitt-Positionen – Richtung ergibt sich aus der Kategorie; negativer Betrag mindert die Kategorie (z. B. Rückzahlung auf ein Aufwandskonto)</Label>
                   {splitRows.map((row, i) => (
                     <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1.5fr auto", gap: 8, marginBottom: 6, alignItems: "center" }}>
                       <Select value={row.kontoId} onChange={(e) => updateSplitRow(i, { kontoId: e.target.value })} required>
                         <option value="">– Kategorie –</option>
-                        {kontenFuerArt.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
+                        <optgroup label="Erträge">
+                          {data.konten.filter((k) => k.typ === "Ertrag").map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
+                        </optgroup>
+                        <optgroup label="Aufwendungen">
+                          {data.konten.filter((k) => k.typ === "Aufwand").map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
+                        </optgroup>
                       </Select>
-                      <Input type="number" step="0.01" placeholder="Betrag" value={row.betrag} onChange={(e) => updateSplitRow(i, { betrag: e.target.value })} required />
+                      <Input type="number" step="0.01" placeholder="Betrag (neg. = Minderung)" value={row.betrag} onChange={(e) => updateSplitRow(i, { betrag: e.target.value })} required />
                       <Select value={row.klasseId} onChange={(e) => updateSplitRow(i, { klasseId: e.target.value })}>
                         <option value="">– keine Klasse –</option>
                         {data.klassen.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
