@@ -339,18 +339,18 @@ function LoginScreen() {
   );
 }
 
-const [session, setSession] = useState(undefined);
-
-useEffect(() => {
-  supabase.auth.getSession().then(({ data }) => setSession(data.session));
-  const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-  return () => listener.subscription.unsubscribe();
-}, []);
-
-if (session === undefined) return <div style={{ padding: 40 }}>Lade…</div>;
-if (!session) return <LoginScreen />;
-
 export default function App() {
+  const [session, setSession] = useState(undefined);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  if (session === undefined) return <div style={{ padding: 40 }}>Lade…</div>;
+  if (!session) return <LoginScreen />;
+
   const [data, setData] = useState(null);
   const [tab, setTab] = useState('dashboard');
 
@@ -510,6 +510,13 @@ export default function App() {
               }}
             >
               {n.label}
+
+              <div
+              onClick={() => supabase.auth.signOut()}
+              style={{ padding: "9px 18px", cursor: "pointer", fontSize: 13.5, marginTop: 20, borderTop: "1px solid rgba(255,255,255,0.2)", opacity: 0.85 }}
+            >
+              Abmelden
+            </div>
             </div>
           ))}
         </div>
