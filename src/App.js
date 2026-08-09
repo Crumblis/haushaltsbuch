@@ -926,7 +926,7 @@ function Buchungen({ data, update, db, kontoById, assetValue, editBuchungId, onC
           {belegart === "Buchung" && (
             <div style={{ marginBottom: 16 }}>
               <Label>Rechnungspositionen</Label>
-              <div style={{ border: `1px solid ${C.line}`, borderRadius: 6, overflow: "hidden", marginTop: 4 }}>
+              <div style={{ border: `1px solid ${C.line}`, borderRadius: 6, marginTop: 4 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "2.2fr 1fr 1.4fr auto", background: C.paper, padding: "7px 12px", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: C.inkSoft }}>
                   <div>Kategorie</div><div>Betrag (€)</div><div>Klasse</div><div></div>
                 </div>
