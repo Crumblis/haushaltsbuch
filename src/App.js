@@ -308,6 +308,48 @@ const NAV = [
   { id: 'cashflow', label: 'Cashflow' },
 ];
 
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) setError("Anmeldung fehlgeschlagen: " + error.message);
+  };
+
+  return (
+    <div style={{ maxWidth: 320, margin: "80px auto", fontFamily: FONT_SANS }}>
+      <h2 style={{ fontFamily: FONT_SERIF }}>Haushaltsbuch – Anmeldung</h2>
+      <form onSubmit={submit}>
+        <div style={{ marginBottom: 10 }}>
+          <Label>E-Mail</Label>
+          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <Label>Passwort</Label>
+          <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+        </div>
+        <Btn primary type="submit">Anmelden</Btn>
+        {error && <div style={{ color: C.loss, fontSize: 13, marginTop: 8 }}>{error}</div>}
+      </form>
+    </div>
+  );
+}
+
+const [session, setSession] = useState(undefined);
+
+useEffect(() => {
+  supabase.auth.getSession().then(({ data }) => setSession(data.session));
+  const { data: listener } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+  return () => listener.subscription.unsubscribe();
+}, []);
+
+if (session === undefined) return <div style={{ padding: 40 }}>Lade…</div>;
+if (!session) return <LoginScreen />;
+
 export default function App() {
   const [data, setData] = useState(null);
   const [tab, setTab] = useState('dashboard');
