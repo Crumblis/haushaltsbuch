@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Papa from "papaparse";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -65,31 +65,110 @@ const supabase = createClient(
   "sb_publishable_vRzu_oYDFZtp54g7NBLBTQ_GrC8_p0r"
 );
 
+const numOrNull = (v) => (v === "" || v === null || v === undefined ? null : Number(v));
+
+// Reihenfolge wichtig wegen Fremdschlüsseln: Kinder vor Eltern löschen, Eltern vor Kindern einfügen.
+const DELETE_ORDER = ["buchungssplits", "buchungen", "sondertilgungen", "vermoegensbuchungen", "darlehen", "vermoegenswerte", "bilanzpositionen", "bankkonten", "adressen", "klassen", "konten"];
+const INSERT_ORDER = [...DELETE_ORDER].reverse();
+
 async function loadData() {
   try {
-    const { data, error } = await supabase
-      .from("haushaltsbuch")
-      .select("data")
-      .eq("id", "ragnar")
-      .single();
-    if (error) throw error;
-    if (data && data.data && Object.keys(data.data).length > 0) return data.data;
+    const [konten, klassen, adressen, bankkonten, bilanzpositionen, vermoegenswerte, vermoegensbuchungen, darlehen, sondertilgungen, buchungen, buchungssplits] = await Promise.all([
+      supabase.from("konten").select("*"),
+      supabase.from("klassen").select("*"),
+      supabase.from("adressen").select("*"),
+      supabase.from("bankkonten").select("*"),
+      supabase.from("bilanzpositionen").select("*"),
+      supabase.from("vermoegenswerte").select("*"),
+      supabase.from("vermoegensbuchungen").select("*"),
+      supabase.from("darlehen").select("*"),
+      supabase.from("sondertilgungen").select("*"),
+      supabase.from("buchungen").select("*"),
+      supabase.from("buchungssplits").select("*"),
+    ]);
+    const alleLeer = [konten, klassen, adressen, bankkonten, buchungen].every((r) => !r.data || r.data.length === 0);
+    if (alleLeer) return seed;
+
+    const splitsProBuchung = {};
+    (buchungssplits.data || []).forEach((s) => {
+      (splitsProBuchung[s.buchung_id] = splitsProBuchung[s.buchung_id] || []).push({ id: s.id, kontoId: s.konto_id, betrag: s.betrag, klasseId: s.klasse_id });
+    });
+
+    return {
+      konten: konten.data || [],
+      klassen: klassen.data || [],
+      adressen: adressen.data || [],
+      bankkonten: bankkonten.data || [],
+      bilanzpositionen: bilanzpositionen.data || [],
+      vermoegenswerte: (vermoegenswerte.data || []).map((r) => ({ id: r.id, name: r.name, typ: r.typ, kaufwert: r.kaufwert, kaufdatum: r.kaufdatum, isin: r.isin, anzahl: r.anzahl, aktuellerKurs: r.aktueller_kurs, kursDatum: r.kurs_datum, notiz: r.notiz })),
+      vermoegensBuchungen: (vermoegensbuchungen.data || []).map((r) => ({ id: r.id, vermoegenswertId: r.vermoegenswert_id, datum: r.datum, wert: r.wert })),
+      darlehen: (darlehen.data || []).map((r) => ({ id: r.id, name: r.name, glaeubiger: r.glaeubiger, ursprungsbetrag: r.ursprungsbetrag, zinssatz: r.zinssatz, rateMonatlich: r.rate_monatlich, startdatum: r.startdatum, notiz: r.notiz })),
+      sondertilgungen: (sondertilgungen.data || []).map((r) => ({ id: r.id, darlehenId: r.darlehen_id, datum: r.datum, betrag: r.betrag })),
+      buchungen: (buchungen.data || []).map((r) => ({
+        id: r.id, datum: r.datum, betrag: r.betrag, art: r.art, kontoId: r.konto_id, adresseId: r.adresse_id, klasseId: r.klasse_id,
+        bankkontoId: r.bankkonto_id, vonBankkontoId: r.von_bankkonto_id, nachBankkontoId: r.nach_bankkonto_id, vermoegenswertId: r.vermoegenswert_id,
+        beschreibung: r.beschreibung, splits: splitsProBuchung[r.id] || [],
+      })),
+    };
   } catch (e) {
     console.error("Laden fehlgeschlagen", e);
+    return seed;
   }
-  return seed;
 }
 
-async function saveData(data) {
-  try {
-    await supabase
-      .from("haushaltsbuch")
-      .update({ data, updated_at: new Date().toISOString() })
-      .eq("id", "ragnar");
-  } catch (e) {
-    console.error("Speichern fehlgeschlagen", e);
+// ---------- Einzelzeilen-Mapper JS -> DB-Spaltennamen ----------
+const mapKonto = (k) => ({ id: k.id, name: k.name, typ: k.typ, gruppe: k.gruppe || null, kostenart: k.kostenart || null });
+const mapKlasse = (k) => ({ id: k.id, name: k.name, typ: k.typ });
+const mapAdresse = (a) => ({ id: a.id, name: a.name, rolle: a.rolle || null, iban: a.iban || null, notiz: a.notiz || null });
+const mapBankkonto = (b) => ({ id: b.id, name: b.name, startsaldo: Number(b.startsaldo) || 0 });
+const mapBilanzposition = (p) => ({ id: p.id, name: p.name, typ: p.typ, wert: Number(p.wert) || 0 });
+const mapVermoegenswert = (a) => ({ id: a.id, name: a.name, typ: a.typ, kaufwert: numOrNull(a.kaufwert), kaufdatum: a.kaufdatum || null, isin: a.isin || null, anzahl: numOrNull(a.anzahl), aktueller_kurs: numOrNull(a.aktuellerKurs), kurs_datum: a.kursDatum || null, notiz: a.notiz || null });
+const mapVermoegensBuchung = (v) => ({ id: v.id, vermoegenswert_id: v.vermoegenswertId, datum: v.datum, wert: Number(v.wert) });
+const mapDarlehen = (l) => ({ id: l.id, name: l.name, glaeubiger: l.glaeubiger || null, ursprungsbetrag: Number(l.ursprungsbetrag) || 0, zinssatz: numOrNull(l.zinssatz), rate_monatlich: numOrNull(l.rateMonatlich), startdatum: l.startdatum || null, notiz: l.notiz || null });
+const mapSondertilgung = (s) => ({ id: s.id, darlehen_id: s.darlehenId, datum: s.datum, betrag: Number(s.betrag) || 0 });
+const mapBuchung = (b) => ({ id: b.id, datum: b.datum, betrag: Number(b.betrag) || 0, art: b.art, konto_id: b.kontoId || null, adresse_id: b.adresseId || null, klasse_id: b.klasseId || null, bankkonto_id: b.bankkontoId || null, von_bankkonto_id: b.vonBankkontoId || null, nach_bankkonto_id: b.nachBankkontoId || null, vermoegenswert_id: b.vermoegenswertId || null, beschreibung: b.beschreibung || null });
+const mapSplit = (s, buchungId) => ({ id: s.id || uid(), buchung_id: buchungId, konto_id: s.kontoId || null, betrag: Number(s.betrag) || 0, klasse_id: s.klasseId || null });
+
+// ---------- Generische Einzelzeilen-Operationen ----------
+async function dbInsert(table, row) {
+  const { error } = await supabase.from(table).insert(row);
+  if (error) console.error(`Anlegen fehlgeschlagen (${table})`, error);
+}
+async function dbUpdate(table, row) {
+  const { id, ...rest } = row;
+  const { error } = await supabase.from(table).update(rest).eq("id", id);
+  if (error) console.error(`Ändern fehlgeschlagen (${table})`, error);
+}
+async function dbDelete(table, id) {
+  const { error } = await supabase.from(table).delete().eq("id", id);
+  if (error) console.error(`Löschen fehlgeschlagen (${table})`, error);
+}
+async function dbReplaceSplits(buchungId, splits) {
+  await supabase.from("buchungssplits").delete().eq("buchung_id", buchungId);
+  if (splits && splits.length > 0) {
+    const { error } = await supabase.from("buchungssplits").insert(splits.map((s) => mapSplit(s, buchungId)));
+    if (error) console.error("Anlegen fehlgeschlagen (buchungssplits)", error);
   }
 }
+
+// Ein Aktionsobjekt pro Tabelle: add/update/remove sprechen jeweils nur die eine betroffene Zeile an.
+// (vermoegensbuchungen, sondertilgungen, buchungssplits räumt die Datenbank per "on delete cascade" automatisch mit auf.)
+const db = {
+  konten: { add: (k) => dbInsert("konten", mapKonto(k)), update: (k) => dbUpdate("konten", mapKonto(k)), remove: (id) => dbDelete("konten", id) },
+  klassen: { add: (k) => dbInsert("klassen", mapKlasse(k)), update: (k) => dbUpdate("klassen", mapKlasse(k)), remove: (id) => dbDelete("klassen", id) },
+  adressen: { add: (a) => dbInsert("adressen", mapAdresse(a)), update: (a) => dbUpdate("adressen", mapAdresse(a)), remove: (id) => dbDelete("adressen", id) },
+  bankkonten: { add: (b) => dbInsert("bankkonten", mapBankkonto(b)), update: (b) => dbUpdate("bankkonten", mapBankkonto(b)), remove: (id) => dbDelete("bankkonten", id) },
+  bilanzpositionen: { add: (p) => dbInsert("bilanzpositionen", mapBilanzposition(p)), update: (p) => dbUpdate("bilanzpositionen", mapBilanzposition(p)), remove: (id) => dbDelete("bilanzpositionen", id) },
+  vermoegenswerte: { add: (a) => dbInsert("vermoegenswerte", mapVermoegenswert(a)), update: (a) => dbUpdate("vermoegenswerte", mapVermoegenswert(a)), remove: (id) => dbDelete("vermoegenswerte", id) },
+  vermoegensBuchungen: { add: (v) => dbInsert("vermoegensbuchungen", mapVermoegensBuchung(v)) },
+  darlehen: { add: (l) => dbInsert("darlehen", mapDarlehen(l)), update: (l) => dbUpdate("darlehen", mapDarlehen(l)), remove: (id) => dbDelete("darlehen", id) },
+  sondertilgungen: { add: (s) => dbInsert("sondertilgungen", mapSondertilgung(s)) },
+  buchungen: {
+    add: (b) => { dbInsert("buchungen", mapBuchung(b)); if (b.splits && b.splits.length > 0) dbReplaceSplits(b.id, b.splits); },
+    update: (b) => { dbUpdate("buchungen", mapBuchung(b)); dbReplaceSplits(b.id, b.splits || []); },
+    remove: (id) => dbDelete("buchungen", id),
+  },
+};
 
 function LoginScreen() {
   const [email, setEmail] = useState("");
@@ -277,9 +356,6 @@ export default function App() {
   useEffect(() => {
     loadData().then(setData);
   }, []);
-  useEffect(() => {
-    if (data) saveData(data);
-  }, [data]);
 
   const update = useCallback((fn) => setData((d) => fn({ ...d })), []);
 
@@ -406,12 +482,12 @@ export default function App() {
         </div>
         <div style={{ flex: 1, padding: 22, overflowX: "auto" }}>
           {tab === "dashboard" && <Dashboard data={data} bankSaldo={bankSaldo} bankById={bankById} nettovermoegenAt={nettovermoegenAt} />}
-          {tab === "buchungen" && <Buchungen data={data} update={update} kontoById={kontoById} adresseById={adresseById} klasseById={klasseById} bankById={bankById} assetValue={assetValue} />}
+          {tab === "buchungen" && <Buchungen data={data} update={update} db={db} kontoById={kontoById} adresseById={adresseById} klasseById={klasseById} bankById={bankById} assetValue={assetValue} />}
           {tab === "import" && <ImportCSV data={data} update={update} />}
-          {tab === "adressen" && <Adressen data={data} update={update} />}
-          {tab === "anlagen" && <Anlagenregister data={data} update={update} assetValue={assetValue} />}
-          {tab === "darlehen" && <Darlehen data={data} update={update} loanSchedule={loanSchedule} />}
-          {tab === "stamm" && <Stammdaten data={data} update={update} />}
+          {tab === "adressen" && <Adressen data={data} update={update} db={db} />}
+          {tab === "anlagen" && <Anlagenregister data={data} update={update} db={db} assetValue={assetValue} />}
+          {tab === "darlehen" && <Darlehen data={data} update={update} db={db} loanSchedule={loanSchedule} />}
+          {tab === "stamm" && <Stammdaten data={data} update={update} db={db} />}
           {tab === "guv" && <GuV data={data} kontoById={kontoById} klassen={data.klassen} />}
           {tab === "bilanz" && <Bilanz data={data} bankSaldo={bankSaldo} assetValue={assetValue} loanRestschuld={loanRestschuld} nettovermoegenAt={nettovermoegenAt} />}
           {tab === "cashflow" && <Cashflow data={data} bankById={bankById} bankSaldo={bankSaldo} />}
@@ -521,12 +597,12 @@ function emptyBuchung(data) {
   };
 }
 
-function Buchungen({ data, update, kontoById, adresseById, klasseById, bankById, assetValue }) {
+function Buchungen({ data, update, db, kontoById, adresseById, klasseById, bankById, assetValue }) {
   const [form, setForm] = useState(() => emptyBuchung(data));
   const [filterMonat, setFilterMonat] = useState("");
   const [editId, setEditId] = useState(null);
   const [splitMode, setSplitMode] = useState(false);
-  const [splitRows, setSplitRows] = useState([{ kontoId: "", betrag: "", klasseId: "" }]);
+  const [splitRows, setSplitRows] = useState([{ id: uid(), kontoId: "", betrag: "", klasseId: "" }]);
 
   const kontenFuerArt = data.konten.filter((k) => k.typ === (form.art === "Einnahme" ? "Ertrag" : "Aufwand"));
   const splitSumme = splitRows.reduce((s, r) => s + (Number(r.betrag) || 0), 0);
@@ -534,11 +610,11 @@ function Buchungen({ data, update, kontoById, adresseById, klasseById, bankById,
   const resetForm = () => {
     setForm(emptyBuchung(data));
     setSplitMode(false);
-    setSplitRows([{ kontoId: "", betrag: "", klasseId: "" }]);
+    setSplitRows([{ id: uid(), kontoId: "", betrag: "", klasseId: "" }]);
     setEditId(null);
   };
 
-  const addSplitRow = () => setSplitRows([...splitRows, { kontoId: "", betrag: "", klasseId: "" }]);
+  const addSplitRow = () => setSplitRows([...splitRows, { id: uid(), kontoId: "", betrag: "", klasseId: "" }]);
   const removeSplitRow = (i) => setSplitRows(splitRows.filter((_, idx) => idx !== i));
   const updateSplitRow = (i, patch) => setSplitRows(splitRows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
 
@@ -548,11 +624,12 @@ function Buchungen({ data, update, kontoById, adresseById, klasseById, bankById,
     if (form.art === "Umbuchung") {
       if (!form.betrag || !form.vonBankkontoId || !form.nachBankkontoId || form.vonBankkontoId === form.nachBankkontoId) return;
       const rec = {
-        id: form.id, datum: form.datum, art: "Umbuchung", betrag: Math.abs(Number(form.betrag)),
+        id: editId || form.id || uid(), datum: form.datum, art: "Umbuchung", betrag: Math.abs(Number(form.betrag)),
         vonBankkontoId: form.vonBankkontoId, nachBankkontoId: form.nachBankkontoId,
         beschreibung: form.beschreibung, kontoId: "", adresseId: "", klasseId: "", bankkontoId: "", splits: [],
       };
       update((d) => ({ ...d, buchungen: editId ? d.buchungen.map((b) => (b.id === editId ? rec : b)) : [rec, ...d.buchungen] }));
+      if (editId) db.buchungen.update(rec); else db.buchungen.add(rec);
       resetForm();
       return;
     }
@@ -561,19 +638,23 @@ function Buchungen({ data, update, kontoById, adresseById, klasseById, bankById,
       if (!form.betrag || !form.bankkontoId || !form.vermoegenswertId) return;
       const asset = data.vermoegenswerte.find((a) => a.id === form.vermoegenswertId);
       const rec = {
-        id: form.id, datum: form.datum, art: "Investition", betrag: Math.abs(Number(form.betrag)),
+        id: editId || form.id || uid(), datum: form.datum, art: "Investition", betrag: Math.abs(Number(form.betrag)),
         bankkontoId: form.bankkontoId, vermoegenswertId: form.vermoegenswertId, beschreibung: form.beschreibung,
         kontoId: "", adresseId: form.adresseId, klasseId: "", splits: [],
       };
+      let neueWertBuchung = null;
       update((d) => {
         const buchungen = editId ? d.buchungen.map((b) => (b.id === editId ? rec : b)) : [rec, ...d.buchungen];
         let vermoegensBuchungen = d.vermoegensBuchungen;
         if (asset && asset.typ !== "Wertpapier") {
           const bisherigerWert = assetValue(asset, form.datum);
-          vermoegensBuchungen = [{ id: uid(), vermoegenswertId: form.vermoegenswertId, datum: form.datum, wert: bisherigerWert + Math.abs(Number(form.betrag)) }, ...vermoegensBuchungen];
+          neueWertBuchung = { id: uid(), vermoegenswertId: form.vermoegenswertId, datum: form.datum, wert: bisherigerWert + Math.abs(Number(form.betrag)) };
+          vermoegensBuchungen = [neueWertBuchung, ...vermoegensBuchungen];
         }
         return { ...d, buchungen, vermoegensBuchungen };
       });
+      if (editId) db.buchungen.update(rec); else db.buchungen.add(rec);
+      if (neueWertBuchung) db.vermoegensBuchungen.add(neueWertBuchung);
       resetForm();
       return;
     }
@@ -584,21 +665,26 @@ function Buchungen({ data, update, kontoById, adresseById, klasseById, bankById,
       const gueltig = splitRows.filter((r) => r.kontoId && Number(r.betrag) > 0);
       if (gueltig.length === 0) return;
       const rec = {
-        id: form.id, datum: form.datum, art: form.art, betrag: gueltig.reduce((s, r) => s + Number(r.betrag), 0),
+        id: editId || form.id || uid(), datum: form.datum, art: form.art, betrag: gueltig.reduce((s, r) => s + Number(r.betrag), 0),
         bankkontoId: form.bankkontoId, adresseId: form.adresseId, beschreibung: form.beschreibung,
-        kontoId: "", klasseId: "", splits: gueltig.map((r) => ({ kontoId: r.kontoId, betrag: Number(r.betrag), klasseId: r.klasseId })),
+        kontoId: "", klasseId: "", splits: gueltig.map((r) => ({ id: r.id || uid(), kontoId: r.kontoId, betrag: Number(r.betrag), klasseId: r.klasseId })),
       };
       update((d) => ({ ...d, buchungen: editId ? d.buchungen.map((b) => (b.id === editId ? rec : b)) : [rec, ...d.buchungen] }));
+      if (editId) db.buchungen.update(rec); else db.buchungen.add(rec);
       resetForm();
       return;
     }
     if (!form.betrag || !form.kontoId) return;
-    const rec = { ...form, betrag: Math.abs(Number(form.betrag)), splits: [] };
+    const rec = { ...form, id: editId || form.id || uid(), betrag: Math.abs(Number(form.betrag)), splits: [] };
     update((d) => ({ ...d, buchungen: editId ? d.buchungen.map((b) => (b.id === editId ? rec : b)) : [rec, ...d.buchungen] }));
+    if (editId) db.buchungen.update(rec); else db.buchungen.add(rec);
     resetForm();
   };
 
-  const remove = (id) => update((d) => ({ ...d, buchungen: d.buchungen.filter((b) => b.id !== id) }));
+  const remove = (id) => {
+    update((d) => ({ ...d, buchungen: d.buchungen.filter((b) => b.id !== id) }));
+    db.buchungen.remove(id); // Splitt-Positionen räumt "on delete cascade" in der DB automatisch mit auf
+  };
   const startEdit = (b) => {
     setForm({ ...emptyBuchung(data), ...b });
     setEditId(b.id);
@@ -607,7 +693,7 @@ function Buchungen({ data, update, kontoById, adresseById, klasseById, bankById,
       setSplitRows(b.splits.map((s) => ({ ...s })));
     } else {
       setSplitMode(false);
-      setSplitRows([{ kontoId: "", betrag: "", klasseId: "" }]);
+      setSplitRows([{ id: uid(), kontoId: "", betrag: "", klasseId: "" }]);
     }
   };
 
@@ -953,23 +1039,24 @@ function ImportCSV({ data, update }) {
 }
 
 // ---------- Adressbuch ----------
-function Adressen({ data, update }) {
+function Adressen({ data, update, db }) {
   const [form, setForm] = useState({ id: null, name: "", rolle: "Beide", iban: "", notiz: "" });
 
   const submit = (e) => {
     e.preventDefault();
     if (!form.name) return;
-    update((d) => {
-      if (form.id) {
-        d.adressen = d.adressen.map((a) => (a.id === form.id ? { ...form } : a));
-      } else {
-        d.adressen = [{ ...form, id: uid() }, ...d.adressen];
-      }
-      return d;
-    });
+    const rec = { ...form, id: form.id || uid() };
+    update((d) => ({
+      ...d,
+      adressen: form.id ? d.adressen.map((a) => (a.id === form.id ? rec : a)) : [rec, ...d.adressen],
+    }));
+    if (form.id) db.adressen.update(rec); else db.adressen.add(rec);
     setForm({ id: null, name: "", rolle: "Beide", iban: "", notiz: "" });
   };
-  const remove = (id) => update((d) => ({ ...d, adressen: d.adressen.filter((a) => a.id !== id) }));
+  const remove = (id) => {
+    update((d) => ({ ...d, adressen: d.adressen.filter((a) => a.id !== id) }));
+    db.adressen.remove(id);
+  };
 
   return (
     <div>
@@ -1013,7 +1100,7 @@ function Adressen({ data, update }) {
 }
 
 // ---------- Stammdaten: Konten, Klassen, Bankkonten, Bilanzpositionen ----------
-function Stammdaten({ data, update }) {
+function Stammdaten({ data, update, db }) {
   const [kForm, setKForm] = useState({ id: null, name: "", typ: "Aufwand", gruppe: "", kostenart: "Variabel" });
   const [klForm, setKlForm] = useState({ id: null, name: "", typ: "Kostenstelle" });
   const [bForm, setBForm] = useState({ id: null, name: "", startsaldo: "" });
@@ -1022,14 +1109,18 @@ function Stammdaten({ data, update }) {
   const saveList = (listName, form, setForm, empty) => (e) => {
     e.preventDefault();
     if (!form.name) return;
-    update((d) => {
-      if (form.id) d[listName] = d[listName].map((x) => (x.id === form.id ? { ...form } : x));
-      else d[listName] = [{ ...form, id: uid() }, ...d[listName]];
-      return d;
-    });
+    const rec = { ...form, id: form.id || uid() };
+    update((d) => ({
+      ...d,
+      [listName]: form.id ? d[listName].map((x) => (x.id === form.id ? rec : x)) : [rec, ...d[listName]],
+    }));
+    if (db[listName]) { if (form.id) db[listName].update(rec); else db[listName].add(rec); }
     setForm(empty);
   };
-  const removeFrom = (listName, id) => update((d) => ({ ...d, [listName]: d[listName].filter((x) => x.id !== id) }));
+  const removeFrom = (listName, id) => {
+    update((d) => ({ ...d, [listName]: d[listName].filter((x) => x.id !== id) }));
+    if (db[listName]) db[listName].remove(id);
+  };
 
   return (
     <div>
@@ -1423,7 +1514,7 @@ function emptyAsset() {
   return { id: uid(), name: "", typ: "Wertpapier", kaufwert: "", kaufdatum: todayISO(), isin: "", anzahl: "", aktuellerKurs: "", kursDatum: todayISO(), notiz: "" };
 }
 
-function Anlagenregister({ data, update, assetValue }) {
+function Anlagenregister({ data, update, db, assetValue }) {
   const [form, setForm] = useState(emptyAsset());
   const [editId, setEditId] = useState(null);
   const [selected, setSelected] = useState(null);
@@ -1432,30 +1523,45 @@ function Anlagenregister({ data, update, assetValue }) {
   const submit = (e) => {
     e.preventDefault();
     if (!form.name) return;
-    update((d) => {
-      if (editId) d.vermoegenswerte = d.vermoegenswerte.map((a) => (a.id === editId ? { ...form } : a));
-      else d.vermoegenswerte = [{ ...form, id: uid() }, ...d.vermoegenswerte];
-      return d;
-    });
+    const rec = { ...form, id: editId || form.id || uid() };
+    update((d) => ({
+      ...d,
+      vermoegenswerte: editId ? d.vermoegenswerte.map((a) => (a.id === editId ? rec : a)) : [rec, ...d.vermoegenswerte],
+    }));
+    if (editId) db.vermoegenswerte.update(rec); else db.vermoegenswerte.add(rec);
     setForm(emptyAsset());
     setEditId(null);
   };
-  const remove = (id) => update((d) => ({
-    ...d,
-    vermoegenswerte: d.vermoegenswerte.filter((a) => a.id !== id),
-    vermoegensBuchungen: d.vermoegensBuchungen.filter((v) => v.vermoegenswertId !== id),
-  }));
+  const remove = (id) => {
+    update((d) => ({
+      ...d,
+      vermoegenswerte: d.vermoegenswerte.filter((a) => a.id !== id),
+      vermoegensBuchungen: d.vermoegensBuchungen.filter((v) => v.vermoegenswertId !== id),
+    }));
+    db.vermoegenswerte.remove(id); // Wertbuchungen räumt "on delete cascade" in der DB automatisch mit auf
+  };
   const startEdit = (a) => { setForm(a); setEditId(a.id); };
 
   const addWert = (assetId) => {
     if (!wertForm.wert) return;
-    update((d) => ({ ...d, vermoegensBuchungen: [{ id: uid(), vermoegenswertId: assetId, datum: wertForm.datum, wert: wertForm.wert }, ...d.vermoegensBuchungen] }));
+    const rec = { id: uid(), vermoegenswertId: assetId, datum: wertForm.datum, wert: wertForm.wert };
+    update((d) => ({ ...d, vermoegensBuchungen: [rec, ...d.vermoegensBuchungen] }));
+    db.vermoegensBuchungen.add(rec);
     setWertForm({ datum: todayISO(), wert: "" });
   };
 
   const updateKurs = (assetId, kurs) => {
     if (kurs === "" || kurs === undefined) return;
-    update((d) => ({ ...d, vermoegenswerte: d.vermoegenswerte.map((a) => (a.id === assetId ? { ...a, aktuellerKurs: kurs, kursDatum: todayISO() } : a)) }));
+    let rec = null;
+    update((d) => ({
+      ...d,
+      vermoegenswerte: d.vermoegenswerte.map((a) => {
+        if (a.id !== assetId) return a;
+        rec = { ...a, aktuellerKurs: kurs, kursDatum: todayISO() };
+        return rec;
+      }),
+    }));
+    if (rec) db.vermoegenswerte.update(rec);
   };
 
   const gesamtwert = data.vermoegenswerte.reduce((s, a) => s + assetValue(a), 0);
@@ -1559,7 +1665,7 @@ function emptyLoan() {
   return { id: uid(), name: "", glaeubiger: "", ursprungsbetrag: "", zinssatz: "", rateMonatlich: "", startdatum: todayISO(), notiz: "" };
 }
 
-function Darlehen({ data, update, loanSchedule }) {
+function Darlehen({ data, update, db, loanSchedule }) {
   const [form, setForm] = useState(emptyLoan());
   const [editId, setEditId] = useState(null);
   const [offen, setOffen] = useState(null);
@@ -1568,24 +1674,30 @@ function Darlehen({ data, update, loanSchedule }) {
   const submit = (e) => {
     e.preventDefault();
     if (!form.name || !form.ursprungsbetrag) return;
-    update((d) => {
-      if (editId) d.darlehen = d.darlehen.map((l) => (l.id === editId ? { ...form } : l));
-      else d.darlehen = [{ ...form, id: uid() }, ...d.darlehen];
-      return d;
-    });
+    const rec = { ...form, id: editId || form.id || uid() };
+    update((d) => ({
+      ...d,
+      darlehen: editId ? d.darlehen.map((l) => (l.id === editId ? rec : l)) : [rec, ...d.darlehen],
+    }));
+    if (editId) db.darlehen.update(rec); else db.darlehen.add(rec);
     setForm(emptyLoan());
     setEditId(null);
   };
-  const remove = (id) => update((d) => ({
-    ...d,
-    darlehen: d.darlehen.filter((l) => l.id !== id),
-    sondertilgungen: d.sondertilgungen.filter((s) => s.darlehenId !== id),
-  }));
+  const remove = (id) => {
+    update((d) => ({
+      ...d,
+      darlehen: d.darlehen.filter((l) => l.id !== id),
+      sondertilgungen: d.sondertilgungen.filter((s) => s.darlehenId !== id),
+    }));
+    db.darlehen.remove(id); // Sondertilgungen räumt "on delete cascade" in der DB automatisch mit auf
+  };
   const startEdit = (l) => { setForm(l); setEditId(l.id); };
 
   const addSonder = (darlehenId) => {
     if (!sForm.betrag) return;
-    update((d) => ({ ...d, sondertilgungen: [{ id: uid(), darlehenId, datum: sForm.datum, betrag: sForm.betrag }, ...d.sondertilgungen] }));
+    const rec = { id: uid(), darlehenId, datum: sForm.datum, betrag: sForm.betrag };
+    update((d) => ({ ...d, sondertilgungen: [rec, ...d.sondertilgungen] }));
+    db.sondertilgungen.add(rec);
     setSForm({ datum: todayISO(), betrag: "" });
   };
 
